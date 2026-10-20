@@ -1,0 +1,1 @@
+APP_NAME = "Optical Character Recognition application"
