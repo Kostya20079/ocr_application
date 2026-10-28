@@ -1,0 +1,8 @@
+{
+  "app_title": "Optical Character Recognition (OCR) Application",
+  "engines": {
+    "template_matching": "Template Matching",
+    "hog_knn": "HOG + k-NN",
+    "tf_model": "Custom Model (TensorFlow + OpenCV)"
+  }
+}

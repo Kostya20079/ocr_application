@@ -1,0 +1,8 @@
+{
+  "app_title": "Aplikacja do Optycznego Rozpoznawania Znaków (OCR)",
+  "engines": {
+    "template_matching": "Template Matching (Dopasowanie Wzorców)",
+    "hog_knn": "HOG + k-NN",
+    "tf_model": "Własny model (TensorFlow + OpenCV)"
+  }
+}
