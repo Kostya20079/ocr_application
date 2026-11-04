@@ -7,7 +7,7 @@ from src.core.preprocessor import ImagePreprocessor
 from src.utils.helpers import get_resource_path
 
 
-class TestOtsu(unittest.TestCase):
+class TestImagePreprocessor(unittest.TestCase):
     """Unit tests for Otsu's thresholding and grayscale conversion in ImagePreprocessor."""
 
     @classmethod
@@ -46,6 +46,20 @@ class TestOtsu(unittest.TestCase):
         # Text sample should contain both foreground and background pixels
         self.assertIn(0, unique_values)
         self.assertIn(255, unique_values)
+
+    def test_invert_to_foreground_mask(self):
+        """Test foreground mask normalization where text is 255 and background is 0."""
+        binary_img = ImagePreprocessor.otsu(self.image)
+        fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary_img)
+
+        self.assertEqual(fg_mask.shape, binary_img.shape)
+        self.assertEqual(fg_mask.dtype, np.uint8)
+
+        # In a typical document page, background (0) dominates foreground text (255)
+        num_bg = np.count_nonzero(fg_mask == 0)
+        num_fg = np.count_nonzero(fg_mask == 255)
+        self.assertGreater(num_bg, num_fg)
+
 
 if __name__ == "__main__":
     unittest.main()

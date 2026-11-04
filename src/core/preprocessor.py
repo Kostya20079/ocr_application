@@ -85,7 +85,32 @@ class ImagePreprocessor:
         return final_img
 
     @staticmethod
-    def segment_characters_and_spaces(image: Any) -> list[Any]:
-        """Segments the image into individual character or word crops."""
-        # Skeleton implementation for character/word segmentation
-        return []
+    def invert_to_foreground_mask(binary_image: Any) -> Any:
+        """Ensures text/ink pixels are foreground (255) and background paper is 0.
+
+        In scanned documents and book pages, text is typically dark (low values)
+        on light paper (high values). After thresholding with `gray > threshold = 255`,
+        the background paper becomes 255 and text becomes 0.
+        
+        To perform mathematical projection profiles, morphological operations,
+        and template matching, foreground text pixels must be represented by 255
+        and background paper by 0.
+
+        Args:
+            binary_image: Binary image (0 and 255).
+
+        Returns:
+            Normalized binary foreground mask where text=255 and background=0.
+        """
+        if not isinstance(binary_image, np.ndarray):
+            binary_image = np.array(binary_image, dtype=np.uint8)
+
+        white_pixels = np.count_nonzero(binary_image == 255)
+        black_pixels = np.count_nonzero(binary_image == 0)
+
+        # In standard documents, background covers the majority of the page (> 50%)
+        # If white pixels dominate, the background is 255, so we invert
+        if white_pixels > black_pixels:
+            return np.where(binary_image == 255, 0, 255).astype(np.uint8)
+
+        return binary_image.astype(np.uint8)
