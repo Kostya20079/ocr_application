@@ -43,7 +43,8 @@ ocr_application/
 ├── tests/                     # Unit tests for preprocessing, engines, and utilities
 │   └── test_skeleton.py
 ├── scripts/
-│   └── build_exe.py           # Automated build script to compile to a standalone .exe
+│   ├── build_exe.py           # Automated build script to compile to a standalone .exe
+│   └── generate_templates.py  # Generates normalized character templates for Template Matching
 ├── app.py                     # Main application entry point
 ├── requirements.txt           # Project dependencies
 └── README.md
@@ -78,6 +79,17 @@ python app.py
 ```bash
 python -m unittest discover tests
 ```
+
+### Generating Character Templates Dataset
+To generate normalized character templates for the Template Matching engine:
+```bash
+# Generate standard Latin letters (A-Z, a-z):
+python scripts/generate_templates.py --letters-only --size 32
+
+# Or generate all standard letters, digits, and punctuation:
+python scripts/generate_templates.py --size 32
+```
+*Note: Generated image files in `data/templates/` are excluded from git via `.gitignore` to keep repository size lean. Run this script whenever you need to produce or refresh templates.*
 
 ---
 
