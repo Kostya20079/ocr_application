@@ -1,0 +1,31 @@
+{
+  "app_title": "Optical Character Recognition (OCR) Application",
+  "config_frame_title": "Configuration & Image Source",
+  "ocr_method_label": "OCR Method:",
+  "samples_label": "Sample Materials:",
+  "browse_button": "Choose Custom File...",
+  "run_button": "Recognize Text",
+  "preview_frame_title": "Image Preview",
+  "no_image_label": "No image selected",
+  "result_frame_title": "Recognized Text",
+  "copy_button": "Copy to Clipboard",
+  "status_ready": "Ready.",
+  "status_loaded": "Loaded file: {filename}",
+  "status_processing": "Processing with: {method}...",
+  "status_done": "Recognition complete.",
+  "status_error": "An error occurred during recognition.",
+  "status_copied": "Text copied to clipboard!",
+  "warning_no_image": "Please select an image first (from samples or your computer)!",
+  "error_no_engine": "Selected OCR engine was not found!",
+  "error_load_failed": "Failed to load image: {error}",
+  "error_ocr_failed": "Error during recognition: {error}",
+  "info_empty_clipboard": "No text to copy.",
+  "sample_select_placeholder": "Select a sample...",
+  "sample_no_files": "No samples found",
+  "language_label": "Language / Język:",
+  "engines": {
+    "template_matching": "Template Matching",
+    "hog_knn": "HOG + k-NN",
+    "tf_model": "Custom Model (TensorFlow + OpenCV)"
+  }
+}
