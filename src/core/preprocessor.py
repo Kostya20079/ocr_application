@@ -171,3 +171,162 @@ class ImagePreprocessor:
             merged_segments.append((cur_start, cur_end))
 
         return merged_segments
+
+    @staticmethod
+    def segment_paragraphs(
+        foreground_mask: np.ndarray,
+        gap_multiplier: float = 2.5,
+        min_line_height: int = 5,
+        indent_threshold_ratio: float = 0.035,
+        short_line_threshold_ratio: float = 0.12,
+    ) -> list[dict[str, Any]]:
+        """Segments a document page into individual paragraphs using multi-feature layout analysis.
+
+        In book and document typography, paragraphs are structured using:
+        1. Vertical spacing: headings or section breaks have significantly larger line gaps.
+        2. First-line indents (Alinea): new paragraphs frequently begin with an indented first line.
+        3. Short line endings: the terminal line of a paragraph terminates early, leaving whitespace
+           before the right margin.
+
+        This method:
+        1. Detects all text lines via horizontal projection profile.
+        2. Calculates horizontal boundaries (x_left, x_right) for each line.
+        3. Infers page column bounds (left_margin, right_margin, column_width).
+        4. Detects paragraph boundaries whenever:
+           - Vertical gap exceeds `median_gap * gap_multiplier` (vertical spacing break), OR
+           - Next line is indented to the right by at least `indent_threshold_ratio * column_width`, OR
+           - Current line ends prematurely by at least `short_line_threshold_ratio * column_width`.
+        5. Returns tight bounding boxes and line spans per paragraph.
+
+        Args:
+            foreground_mask: Binary 2D array where text pixels are 255 and background is 0.
+            gap_multiplier: Factor above median line spacing to identify a vertical paragraph break.
+            min_line_height: Minimum pixel height to qualify as a valid text line.
+            indent_threshold_ratio: Ratio of column width required to trigger an indent-based break.
+            short_line_threshold_ratio: Ratio of column width required to consider a line ending short.
+
+        Returns:
+            List of dictionaries per paragraph:
+                {
+                    "bbox": (x, y, width, height),
+                    "crop": 2D np.ndarray paragraph crop,
+                    "line_spans": list of (line_y_start, line_y_end) relative to page
+                }
+        """
+        # Horizontal projection profile: sum pixel intensities along rows
+        h_profile = np.sum(foreground_mask > 0, axis=1)
+
+        # Detect individual line candidates (lines separated by blank rows)
+        raw_lines = ImagePreprocessor.find_projection_profile_segments(
+            h_profile,
+            threshold=0,
+            min_size=min_line_height,
+            min_gap=1,
+        )
+
+        if not raw_lines:
+            return []
+
+        # Analyze horizontal span for each detected line
+        line_info: list[dict[str, Any]] = []
+        for y_s, y_e in raw_lines:
+            line_slice = foreground_mask[y_s:y_e, :]
+            fg_cols = np.where(np.sum(line_slice > 0, axis=0) > 0)[0]
+            if fg_cols.size == 0:
+                continue
+            x_s = int(fg_cols[0])
+            x_e = int(fg_cols[-1]) + 1
+            line_info.append({
+                "y_span": (y_s, y_e),
+                "x_span": (x_s, x_e),
+                "height": y_e - y_s,
+                "width": x_e - x_s,
+            })
+
+        if not line_info:
+            return []
+
+        if len(line_info) == 1:
+            line_groups = [[line_info[0]["y_span"]]]
+        else:
+            # Estimate document column margins
+            all_x_lefts = [l["x_span"][0] for l in line_info]
+            all_x_rights = [l["x_span"][1] for l in line_info]
+
+            # Left margin is estimated using low percentile (ignoring occasional outdents)
+            column_left = float(np.percentile(all_x_lefts, 15))
+            column_right = float(np.percentile(all_x_rights, 85))
+            column_width = max(1.0, column_right - column_left)
+
+            # Thresholds for horizontal layout cues
+            indent_thresh = max(12.0, column_width * indent_threshold_ratio)
+            short_line_thresh = max(20.0, column_width * short_line_threshold_ratio)
+
+            # Compute median vertical gap between consecutive lines
+            gaps = [
+                line_info[i + 1]["y_span"][0] - line_info[i]["y_span"][1]
+                for i in range(len(line_info) - 1)
+            ]
+            positive_gaps = [g for g in gaps if g > 0]
+            median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
+
+            # Vertical spacing break threshold
+            vertical_gap_thresh = max(median_gap * gap_multiplier, median_gap + 4)
+
+            line_groups = []
+            current_group = [line_info[0]["y_span"]]
+
+            for i in range(len(line_info) - 1):
+                cur_line = line_info[i]
+                next_line = line_info[i + 1]
+
+                v_gap = next_line["y_span"][0] - cur_line["y_span"][1]
+
+                # Large vertical gap (heading / section break)
+                is_vertical_break = v_gap > vertical_gap_thresh
+
+                # Next line is indented to the right (first-line indent)
+                is_indent_break = (next_line["x_span"][0] - column_left) > indent_thresh
+
+                # Current line terminates early before column right edge
+                is_short_line_break = (column_right - cur_line["x_span"][1]) > short_line_thresh
+
+                # Trigger new paragraph if vertical gap, or if indent/short-line cue occurs with normal spacing
+                if is_vertical_break or is_indent_break or is_short_line_break:
+                    line_groups.append(current_group)
+                    current_group = [next_line["y_span"]]
+                else:
+                    current_group.append(next_line["y_span"])
+
+            line_groups.append(current_group)
+
+        paragraphs: list[dict[str, Any]] = []
+
+        for group in line_groups:
+            y_start = group[0][0]
+            y_end = group[-1][1]
+
+            # Slice paragraph vertically
+            para_slice = foreground_mask[y_start:y_end, :]
+
+            # Compute vertical projection profile on the paragraph to find horizontal bounds
+            v_profile = np.sum(para_slice > 0, axis=0)
+            fg_cols = np.where(v_profile > 0)[0]
+
+            if fg_cols.size == 0:
+                continue
+
+            x_start = int(fg_cols[0])
+            x_end = int(fg_cols[-1]) + 1
+
+            tight_crop = para_slice[:, x_start:x_end]
+
+            paragraphs.append(
+                {
+                    "bbox": (x_start, y_start, x_end - x_start, y_end - y_start),
+                    "crop": tight_crop,
+                    "line_spans": group,
+                }
+            )
+
+        return paragraphs

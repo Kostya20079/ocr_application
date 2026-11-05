@@ -71,5 +71,27 @@ class TestImagePreprocessor(unittest.TestCase):
         merged = ImagePreprocessor.find_projection_profile_segments(profile_with_tiny_gap, threshold=0, min_size=2, min_gap=2)
         self.assertEqual(merged, [(0, 5)])
 
+
+    def test_segment_paragraphs_on_sample(self):
+        """Test paragraph segmentation on text_sample.png."""
+        binary_img = ImagePreprocessor.otsu(self.image)
+        fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary_img)
+
+        paragraphs = ImagePreprocessor.segment_paragraphs(fg_mask)
+        self.assertIsInstance(paragraphs, list)
+        self.assertGreater(len(paragraphs), 0)
+
+        for para in paragraphs:
+            self.assertIn("bbox", para)
+            self.assertIn("crop", para)
+            self.assertIn("line_spans", para)
+
+            x, y, w, h = para["bbox"]
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+            self.assertEqual(para["crop"].shape, (h, w))
+            self.assertGreater(len(para["line_spans"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
