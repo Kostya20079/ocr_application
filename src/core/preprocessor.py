@@ -114,3 +114,60 @@ class ImagePreprocessor:
             return np.where(binary_image == 255, 0, 255).astype(np.uint8)
 
         return binary_image.astype(np.uint8)
+
+    @staticmethod
+    def find_projection_profile_segments(
+        profile: np.ndarray,
+        threshold: float = 0.0,
+        min_size: int = 2,
+        min_gap: int = 1,
+    ) -> list[tuple[int, int]]:
+        """Segments a 1D projection profile into contiguous active intervals [start, end).
+
+        Identifies regions where the profile exceeds `threshold`, merging small gaps
+        narrower than `min_gap` and filtering out noise segments shorter than `min_size`.
+
+        Args:
+            profile: 1D numpy array representing projection profile sums.
+            threshold: Value above which a position is considered active content.
+            min_size: Minimum length of a valid segment (to discard single-pixel noise).
+            min_gap: Minimum blank gap length required to separate two distinct segments.
+
+        Returns:
+            List of (start, end) coordinate tuples.
+        """
+        active = profile > threshold
+        if not np.any(active):
+            return []
+
+        # Find transitions: rising edges (+1) and falling edges (-1)
+        diff = np.diff(active.astype(np.int8))
+        starts = np.where(diff == 1)[0] + 1
+        ends = np.where(diff == -1)[0] + 1
+
+        if active[0]:
+            starts = np.insert(starts, 0, 0)
+        if active[-1]:
+            ends = np.append(ends, len(profile))
+
+        raw_segments = list(zip(starts, ends))
+        if not raw_segments:
+            return []
+
+        # Merge segments separated by tiny gaps smaller than min_gap
+        merged_segments: list[tuple[int, int]] = []
+        cur_start, cur_end = raw_segments[0]
+
+        for next_start, next_end in raw_segments[1:]:
+            gap = next_start - cur_end
+            if gap < min_gap:
+                cur_end = next_end
+            else:
+                if (cur_end - cur_start) >= min_size:
+                    merged_segments.append((cur_start, cur_end))
+                cur_start, cur_end = next_start, next_end
+
+        if (cur_end - cur_start) >= min_size:
+            merged_segments.append((cur_start, cur_end))
+
+        return merged_segments

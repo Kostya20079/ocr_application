@@ -60,6 +60,16 @@ class TestImagePreprocessor(unittest.TestCase):
         num_fg = np.count_nonzero(fg_mask == 255)
         self.assertGreater(num_bg, num_fg)
 
+    def test_find_projection_profile_segments(self):
+        """Test 1D projection profile segmentation with gaps and noise thresholds."""
+        profile = np.array([0, 0, 10, 10, 10, 0, 0, 0, 5, 5, 0], dtype=float)
+        segments = ImagePreprocessor.find_projection_profile_segments(profile, threshold=0, min_size=2, min_gap=1)
+        self.assertEqual(segments, [(2, 5), (8, 10)])
+
+        # Test small gap merging
+        profile_with_tiny_gap = np.array([10, 10, 0, 10, 10], dtype=float)
+        merged = ImagePreprocessor.find_projection_profile_segments(profile_with_tiny_gap, threshold=0, min_size=2, min_gap=2)
+        self.assertEqual(merged, [(0, 5)])
 
 if __name__ == "__main__":
     unittest.main()
