@@ -1,5 +1,6 @@
 from typing import Any
 
+import cv2
 import numpy as np
 
 
@@ -408,6 +409,7 @@ class ImagePreprocessor:
         space_ratio_threshold: float = 0.5,
         min_char_width: int = 1,
         min_char_height: int = 2,
+        min_aspect_ratio_for_thin: float = 3.0,
     ) -> list[dict[str, Any]]:
         """Segments a 2D binary text line into individual character glyphs and detects word spaces.
 
@@ -417,11 +419,17 @@ class ImagePreprocessor:
         intra-word spacing (typically >= space_ratio_threshold * median_char_width)
         are flagged with `is_space_before = True` to reconstruct word boundaries.
 
+        Thin but wide characters like hyphens (-), underscores (_), and equals (=)
+        are preserved even when their height is below min_char_height, as long as
+        their width-to-height aspect ratio exceeds min_aspect_ratio_for_thin.
+
         Args:
             binary_line: 2D binary numpy array representing a single line crop (text=255, bg=0).
             space_ratio_threshold: Multiplier of median character width to trigger word space.
             min_char_width: Minimum width in pixels to filter out noise.
             min_char_height: Minimum height in pixels to filter out noise.
+            min_aspect_ratio_for_thin: Minimum width/height ratio to keep glyphs
+                shorter than min_char_height (preserves hyphens, underscores, etc.).
 
         Returns:
             List of character dictionaries:
@@ -455,13 +463,11 @@ class ImagePreprocessor:
         positive_gaps = [g for g in gaps if g > 0]
         median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
 
-        # Space threshold: whichever is more conservative between a fraction of char width or multiple of inter-char gap
         space_threshold = max(median_char_width * space_ratio_threshold, median_gap * 2.2, 4.0)
 
         characters: list[dict[str, Any]] = []
 
         for idx, (x_s, x_e) in enumerate(x_spans):
-            # Check if this character is preceded by a word space
             is_space_before = False
             if idx > 0:
                 prev_x_e = x_spans[idx - 1][1]
@@ -469,7 +475,6 @@ class ImagePreprocessor:
                 if gap >= space_threshold:
                     is_space_before = True
 
-            # Tight vertical slice to get accurate character height
             glyph_slice = line_mask[:, x_s:x_e]
             fg_rows = np.where(np.sum(glyph_slice > 0, axis=1) > 0)[0]
             if fg_rows.size == 0:
@@ -478,7 +483,15 @@ class ImagePreprocessor:
             y_s = int(fg_rows[0])
             y_e = int(fg_rows[-1]) + 1
 
-            if (y_e - y_s) < min_char_height:
+            char_h = y_e - y_s
+            char_w = x_e - x_s
+
+            # Layout criteria for valid glyphs, thin symbols, and punctuation
+            is_thin_horizontal = (char_h < min_char_height) and (char_w / max(char_h, 1) >= min_aspect_ratio_for_thin)
+            is_small_dot = (char_h >= 2) and (char_w >= 2) and (char_h <= 6) and (
+                        char_w <= 6)  # Periods, commas, apostrophes
+
+            if not (is_thin_horizontal or is_small_dot) and (char_h < min_char_height or char_w < min_char_width):
                 continue
 
             tight_char_crop = glyph_slice[y_s:y_e, :]
@@ -490,3 +503,73 @@ class ImagePreprocessor:
             })
 
         return characters
+
+    @staticmethod
+    def normalize_character(
+        char_crop: np.ndarray,
+        target_size: tuple[int, int] = (32, 32),
+        padding: int = 2,
+    ) -> np.ndarray:
+        """Tightly crops foreground pixels and normalizes them onto a target canvas preserving aspect ratio.
+
+        Ensures normalized character crops match the exact dimensions, foreground polarity (255=glyph, 0=bg),
+        and aspect-ratio padding of the template dataset.
+
+        Args:
+            char_crop: 2D binary numpy array of character glyph.
+            target_size: (width, height) of normalized output canvas.
+            padding: Safe margin around the glyph inside target canvas.
+
+        Returns:
+            Normalized 2D uint8 numpy array with shape (target_size[1], target_size[0]).
+        """
+        crop_mask = ImagePreprocessor.invert_to_foreground_mask(char_crop)
+        target_w, target_h = target_size
+
+        fg_indices = np.argwhere(crop_mask > 0)
+        if fg_indices.size == 0:
+            return np.zeros((target_h, target_w), dtype=np.uint8)
+
+        y_min, x_min = fg_indices.min(axis=0)
+        y_max, x_max = fg_indices.max(axis=0) + 1
+
+        tight = crop_mask[y_min:y_max, x_min:x_max]
+        crop_h, crop_w = tight.shape
+
+        max_w = max(1, target_w - 2 * padding)
+        max_h = max(1, target_h - 2 * padding)
+
+        canvas = np.zeros((target_h, target_w), dtype=np.uint8)
+
+        if crop_h < 6 and (crop_w / max(crop_h, 1)) > 1.5:
+            scale = min(max_w / crop_w, 1.0)
+            new_w = max(1, int(round(crop_w * scale)))
+            new_h = max(1, int(round(crop_h * scale)))
+
+            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
+
+            start_x = (target_w - new_w) // 2
+            start_y = target_h // 2 - new_h // 2
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+        elif crop_h < 8 and crop_w < 8:
+            resized_binary = np.where(tight > 100, 255, 0).astype(np.uint8)
+            new_w, new_h = tight.shape[1], tight.shape[0]
+
+            start_x = (target_w - new_w) // 2
+            start_y = target_h - padding - new_h - 2
+
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+        else:
+            scale = min(max_w / crop_w, max_h / crop_h)
+            new_w = max(1, int(round(crop_w * scale)))
+            new_h = max(1, int(round(crop_h * scale)))
+
+            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
+
+            start_x = (target_w - new_w) // 2
+            start_y = (target_h - new_h) // 2
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+
+        return canvas

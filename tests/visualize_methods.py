@@ -6,6 +6,7 @@ the visual overlay alongside the binary foreground mask using matplotlib.
 
 import cv2
 import matplotlib.pyplot as plt
+import numpy as np
 
 from src.core.preprocessor import ImagePreprocessor
 from src.utils.helpers import get_resource_path
@@ -170,17 +171,63 @@ def visualize_segmented_characters(image, line_idx: int = 2):
     plt.tight_layout()
     plt.show()
 
+
+def visualize_normalized_word_letters(image, line_idx: int = 1, target_size: tuple[int, int] = (32, 32)):
+    binary = ImagePreprocessor.otsu(image)
+    fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary)
+
+    lines = ImagePreprocessor.segment_lines(fg_mask)
+    if not lines or line_idx >= len(lines):
+        print(f"Line index {line_idx} out of range (found {len(lines)} lines)")
+        return
+
+    target_line = lines[line_idx]
+    characters = ImagePreprocessor.segment_characters_and_spaces(target_line["crop"])
+
+    # Extract letters of the first word (all characters before the first space after index 0)
+    word_chars = []
+    for idx, char in enumerate(characters):
+        if idx > 0 and char["is_space_before"]:
+            break
+        word_chars.append(char)
+
+    if not word_chars:
+        print("No characters found in the first word.")
+        return
+
+    num_chars = len(word_chars)
+    fig, axes = plt.subplots(2, num_chars, figsize=(3 * num_chars, 6))
+    if num_chars == 1:
+        axes = np.array([[axes[0]], [axes[1]]])
+
+    for i, char in enumerate(word_chars):
+        raw_crop = char["crop"]
+        norm_crop = ImagePreprocessor.normalize_character(raw_crop, target_size=target_size)
+
+        axes[0, i].imshow(raw_crop, cmap="gray")
+        axes[0, i].set_title(f"Raw '{i+1}'\n{raw_crop.shape[1]}x{raw_crop.shape[0]}")
+        axes[0, i].axis("off")
+
+        axes[1, i].imshow(norm_crop, cmap="gray")
+        axes[1, i].set_title(f"Norm '{i+1}'\n{target_size[0]}x{target_size[1]}")
+        axes[1, i].axis("off")
+
+    plt.suptitle("First Word Glyphs: Raw Crop (Top) vs Normalized (Bottom)", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+
 if __name__ == "__main__":
-    img_name = "text_sample1.png"
+    img_name = "text_sample.png"
     sample_path = get_resource_path(f"data/samples/{img_name}")
     if not sample_path.exists():
-        sample_path = get_resource_path(f"data/samples/{img_name}")
+        sample_path = get_resource_path("data/samples/text_sample1.png")
 
     image = cv2.imread(str(sample_path))
     if image is None:
         raise ValueError(f"Failed to read image at {sample_path}")
 
-
     visualize_segmented_paragraphs(image)
     visualize_segmented_lines(image)
     visualize_segmented_characters(image, 1)
+    visualize_normalized_word_letters(image, 1)

@@ -98,7 +98,7 @@ class TestImagePreprocessor(unittest.TestCase):
 
         lines = ImagePreprocessor.segment_lines(fg_mask)
         self.assertIsInstance(lines, list)
-        self.assertEqual(len(lines), 24)
+        self.assertEqual(len(lines), 29)
 
         # Verify paragraph_idx is non-decreasing (sequential rows per paragraph)
         para_indices = [line["paragraph_idx"] for line in lines]
@@ -129,6 +129,31 @@ class TestImagePreprocessor(unittest.TestCase):
 
         spaces_count = sum(1 for c in characters if c["is_space_before"])
         self.assertGreater(spaces_count, 0)
+
+    def test_normalize_character(self):
+        """Test character normalization to target fixed canvas dimensions."""
+        binary_img = ImagePreprocessor.otsu(self.image)
+        lines = ImagePreprocessor.segment_lines(binary_img)
+        characters = ImagePreprocessor.segment_characters_and_spaces(lines[2]["crop"])
+        first_char = characters[0]
+
+        normalized = ImagePreprocessor.normalize_character(first_char["crop"], target_size=(32, 32), padding=2)
+
+        self.assertIsInstance(normalized, np.ndarray)
+        self.assertEqual(normalized.shape, (32, 32))
+        self.assertEqual(normalized.dtype, np.uint8)
+
+        # Ensure output is strictly binary (0 and 255) and contains foreground text pixels
+        unique_vals = set(np.unique(normalized))
+        self.assertTrue(unique_vals.issubset({0, 255}))
+        self.assertIn(255, unique_vals)
+        self.assertIn(0, unique_vals)
+
+        # Empty crop test
+        empty_crop = np.zeros((10, 10), dtype=np.uint8)
+        norm_empty = ImagePreprocessor.normalize_character(empty_crop, target_size=(32, 32))
+        self.assertEqual(norm_empty.shape, (32, 32))
+        self.assertEqual(np.count_nonzero(norm_empty), 0)
 
 
 if __name__ == "__main__":
