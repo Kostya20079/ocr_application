@@ -1,5 +1,6 @@
 from typing import Any
 
+import cv2
 import numpy as np
 
 
@@ -175,13 +176,13 @@ class ImagePreprocessor:
 
     @staticmethod
     def segment_paragraphs(
-        foreground_mask: np.ndarray,
+        binary_image: np.ndarray,
         gap_multiplier: float = 2.5,
         min_line_height: int = 5,
         indent_threshold_ratio: float = 0.035,
         short_line_threshold_ratio: float = 0.12,
     ) -> list[dict[str, Any]]:
-        """Segments a document page into individual paragraphs using multi-feature layout analysis.
+        """Segments a 2D binary document image into individual paragraphs using multi-feature layout analysis.
 
         In book and document typography, paragraphs are structured using:
         1. Vertical spacing: headings or section breaks have significantly larger line gaps.
@@ -200,7 +201,7 @@ class ImagePreprocessor:
         5. Returns tight bounding boxes and line spans per paragraph.
 
         Args:
-            foreground_mask: Binary 2D array where text pixels are 255 and background is 0.
+            binary_image: 2D binary numpy array (text pixels=255, background=0).
             gap_multiplier: Factor above median line spacing to identify a vertical paragraph break.
             min_line_height: Minimum pixel height to qualify as a valid text line.
             indent_threshold_ratio: Ratio of column width required to trigger an indent-based break.
@@ -214,6 +215,8 @@ class ImagePreprocessor:
                     "line_spans": list of (line_y_start, line_y_end) relative to page
                 }
         """
+        foreground_mask = ImagePreprocessor.invert_to_foreground_mask(binary_image)
+
         # Horizontal projection profile: sum pixel intensities along rows
         h_profile = np.sum(foreground_mask > 0, axis=1)
 
@@ -336,3 +339,237 @@ class ImagePreprocessor:
             )
 
         return paragraphs
+
+    @staticmethod
+    def segment_lines(
+        binary_image: np.ndarray,
+        min_line_height: int = 5,
+        min_gap: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Segments a 2D binary document image into ordered text lines across paragraphs.
+
+        Runs `segment_paragraphs()` first to preserve the sequential reading order
+        of lines within each paragraph.
+
+        Args:
+            binary_image: 2D binary numpy array (text pixels=255, background=0).
+            min_line_height: Minimum pixel height for a line.
+            min_gap: Minimum blank rows to separate lines.
+
+        Returns:
+            List of dictionaries for each line:
+                {
+                    "bbox": (x, y, w, h),  # Global coordinates in page
+                    "crop": 2D np.ndarray line crop,
+                    "y_span": (y_start, y_end),  # Local to paragraph
+                    "paragraph_idx": int
+                }
+        """
+        foreground_mask = ImagePreprocessor.invert_to_foreground_mask(binary_image)
+        paragraphs = ImagePreprocessor.segment_paragraphs(foreground_mask)
+        all_lines: list[dict[str, Any]] = []
+
+        for p_idx, para in enumerate(paragraphs):
+            para_crop = para["crop"]
+            para_x, para_y, _, _ = para["bbox"]
+
+            # Compute horizontal projection profile across the paragraph crop
+            h_profile = np.sum(para_crop > 0, axis=1)
+            raw_spans = ImagePreprocessor.find_projection_profile_segments(
+                h_profile,
+                threshold=0,
+                min_size=min_line_height,
+                min_gap=min_gap,
+            )
+
+            for y_s, y_e in raw_spans:
+                line_slice = para_crop[y_s:y_e, :]
+                v_profile = np.sum(line_slice > 0, axis=0)
+                fg_cols = np.where(v_profile > 0)[0]
+                if fg_cols.size == 0:
+                    continue
+                x_s = int(fg_cols[0])
+                x_e = int(fg_cols[-1]) + 1
+
+                line_crop = line_slice[:, x_s:x_e]
+                global_bbox = (int(para_x + x_s), int(para_y + y_s), int(x_e - x_s), int(y_e - y_s))
+
+                all_lines.append({
+                    "bbox": global_bbox,
+                    "crop": line_crop,
+                    "y_span": (y_s, y_e),
+                    "paragraph_idx": p_idx,
+                })
+
+        return all_lines
+
+    @staticmethod
+    def segment_characters_and_spaces(
+        binary_line: np.ndarray,
+        space_ratio_threshold: float = 0.5,
+        min_char_width: int = 1,
+        min_char_height: int = 2,
+        min_aspect_ratio_for_thin: float = 3.0,
+    ) -> list[dict[str, Any]]:
+        """Segments a 2D binary text line into individual character glyphs and detects word spaces.
+
+        Uses the vertical projection profile (column-wise sum of foreground pixels)
+        to identify discrete glyph boundaries [x_start, x_end). Inter-character
+        horizontal whitespace gaps are analyzed: gaps significantly larger than
+        intra-word spacing (typically >= space_ratio_threshold * median_char_width)
+        are flagged with `is_space_before = True` to reconstruct word boundaries.
+
+        Thin but wide characters like hyphens (-), underscores (_), and equals (=)
+        are preserved even when their height is below min_char_height, as long as
+        their width-to-height aspect ratio exceeds min_aspect_ratio_for_thin.
+
+        Args:
+            binary_line: 2D binary numpy array representing a single line crop (text=255, bg=0).
+            space_ratio_threshold: Multiplier of median character width to trigger word space.
+            min_char_width: Minimum width in pixels to filter out noise.
+            min_char_height: Minimum height in pixels to filter out noise.
+            min_aspect_ratio_for_thin: Minimum width/height ratio to keep glyphs
+                shorter than min_char_height (preserves hyphens, underscores, etc.).
+
+        Returns:
+            List of character dictionaries:
+                {
+                    "bbox": (x, y, w, h),      # Local to binary_line crop
+                    "crop": 2D np.ndarray,     # Tight crop of the character glyph
+                    "is_space_before": bool,   # True if a word space precedes this character
+                }
+        """
+        line_mask = ImagePreprocessor.invert_to_foreground_mask(binary_line)
+
+        # Vertical projection profile: sum along columns
+        v_profile = np.sum(line_mask > 0, axis=0)
+
+        # Detect glyph intervals along the horizontal axis
+        x_spans = ImagePreprocessor.find_projection_profile_segments(
+            v_profile,
+            threshold=0,
+            min_size=min_char_width,
+            min_gap=1,
+        )
+
+        if not x_spans:
+            return []
+
+        # Calculate character widths and inter-character gaps
+        char_widths = [span[1] - span[0] for span in x_spans]
+        median_char_width = float(np.median(char_widths)) if char_widths else 10.0
+
+        gaps = [x_spans[i + 1][0] - x_spans[i][1] for i in range(len(x_spans) - 1)]
+        positive_gaps = [g for g in gaps if g > 0]
+        median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
+
+        space_threshold = max(median_char_width * space_ratio_threshold, median_gap * 2.2, 4.0)
+
+        characters: list[dict[str, Any]] = []
+
+        for idx, (x_s, x_e) in enumerate(x_spans):
+            is_space_before = False
+            if idx > 0:
+                prev_x_e = x_spans[idx - 1][1]
+                gap = x_s - prev_x_e
+                if gap >= space_threshold:
+                    is_space_before = True
+
+            glyph_slice = line_mask[:, x_s:x_e]
+            fg_rows = np.where(np.sum(glyph_slice > 0, axis=1) > 0)[0]
+            if fg_rows.size == 0:
+                continue
+
+            y_s = int(fg_rows[0])
+            y_e = int(fg_rows[-1]) + 1
+
+            char_h = y_e - y_s
+            char_w = x_e - x_s
+
+            # Layout criteria for valid glyphs, thin symbols, and punctuation
+            is_thin_horizontal = (char_h < min_char_height) and (char_w / max(char_h, 1) >= min_aspect_ratio_for_thin)
+            is_small_dot = (char_h >= 2) and (char_w >= 2) and (char_h <= 6) and (
+                        char_w <= 6)  # Periods, commas, apostrophes
+
+            if not (is_thin_horizontal or is_small_dot) and (char_h < min_char_height or char_w < min_char_width):
+                continue
+
+            tight_char_crop = glyph_slice[y_s:y_e, :]
+
+            characters.append({
+                "bbox": (int(x_s), int(y_s), int(x_e - x_s), int(y_e - y_s)),
+                "crop": tight_char_crop,
+                "is_space_before": is_space_before,
+            })
+
+        return characters
+
+    @staticmethod
+    def normalize_character(
+        char_crop: np.ndarray,
+        target_size: tuple[int, int] = (32, 32),
+        padding: int = 2,
+    ) -> np.ndarray:
+        """Tightly crops foreground pixels and normalizes them onto a target canvas preserving aspect ratio.
+
+        Ensures normalized character crops match the exact dimensions, foreground polarity (255=glyph, 0=bg),
+        and aspect-ratio padding of the template dataset.
+
+        Args:
+            char_crop: 2D binary numpy array of character glyph.
+            target_size: (width, height) of normalized output canvas.
+            padding: Safe margin around the glyph inside target canvas.
+
+        Returns:
+            Normalized 2D uint8 numpy array with shape (target_size[1], target_size[0]).
+        """
+        crop_mask = ImagePreprocessor.invert_to_foreground_mask(char_crop)
+        target_w, target_h = target_size
+
+        fg_indices = np.argwhere(crop_mask > 0)
+        if fg_indices.size == 0:
+            return np.zeros((target_h, target_w), dtype=np.uint8)
+
+        y_min, x_min = fg_indices.min(axis=0)
+        y_max, x_max = fg_indices.max(axis=0) + 1
+
+        tight = crop_mask[y_min:y_max, x_min:x_max]
+        crop_h, crop_w = tight.shape
+
+        max_w = max(1, target_w - 2 * padding)
+        max_h = max(1, target_h - 2 * padding)
+
+        canvas = np.zeros((target_h, target_w), dtype=np.uint8)
+
+        if crop_h < 6 and (crop_w / max(crop_h, 1)) > 1.5:
+            scale = min(max_w / crop_w, 1.0)
+            new_w = max(1, int(round(crop_w * scale)))
+            new_h = max(1, int(round(crop_h * scale)))
+
+            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
+
+            start_x = (target_w - new_w) // 2
+            start_y = target_h // 2 - new_h // 2
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+        elif crop_h < 8 and crop_w < 8:
+            resized_binary = np.where(tight > 100, 255, 0).astype(np.uint8)
+            new_w, new_h = tight.shape[1], tight.shape[0]
+
+            start_x = (target_w - new_w) // 2
+            start_y = target_h - padding - new_h - 2
+
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+        else:
+            scale = min(max_w / crop_w, max_h / crop_h)
+            new_w = max(1, int(round(crop_w * scale)))
+            new_h = max(1, int(round(crop_h * scale)))
+
+            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
+
+            start_x = (target_w - new_w) // 2
+            start_y = (target_h - new_h) // 2
+            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+
+        return canvas
