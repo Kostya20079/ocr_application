@@ -175,13 +175,13 @@ class ImagePreprocessor:
 
     @staticmethod
     def segment_paragraphs(
-        foreground_mask: np.ndarray,
+        binary_image: np.ndarray,
         gap_multiplier: float = 2.5,
         min_line_height: int = 5,
         indent_threshold_ratio: float = 0.035,
         short_line_threshold_ratio: float = 0.12,
     ) -> list[dict[str, Any]]:
-        """Segments a document page into individual paragraphs using multi-feature layout analysis.
+        """Segments a 2D binary document image into individual paragraphs using multi-feature layout analysis.
 
         In book and document typography, paragraphs are structured using:
         1. Vertical spacing: headings or section breaks have significantly larger line gaps.
@@ -200,7 +200,7 @@ class ImagePreprocessor:
         5. Returns tight bounding boxes and line spans per paragraph.
 
         Args:
-            foreground_mask: Binary 2D array where text pixels are 255 and background is 0.
+            binary_image: 2D binary numpy array (text pixels=255, background=0).
             gap_multiplier: Factor above median line spacing to identify a vertical paragraph break.
             min_line_height: Minimum pixel height to qualify as a valid text line.
             indent_threshold_ratio: Ratio of column width required to trigger an indent-based break.
@@ -214,6 +214,8 @@ class ImagePreprocessor:
                     "line_spans": list of (line_y_start, line_y_end) relative to page
                 }
         """
+        foreground_mask = ImagePreprocessor.invert_to_foreground_mask(binary_image)
+
         # Horizontal projection profile: sum pixel intensities along rows
         h_profile = np.sum(foreground_mask > 0, axis=1)
 
@@ -336,3 +338,66 @@ class ImagePreprocessor:
             )
 
         return paragraphs
+
+    @staticmethod
+    def segment_lines(
+        binary_image: np.ndarray,
+        min_line_height: int = 5,
+        min_gap: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Segments a 2D binary document image into ordered text lines across paragraphs.
+
+        Runs `segment_paragraphs()` first to preserve the sequential reading order
+        of lines within each paragraph.
+
+        Args:
+            binary_image: 2D binary numpy array (text pixels=255, background=0).
+            min_line_height: Minimum pixel height for a line.
+            min_gap: Minimum blank rows to separate lines.
+
+        Returns:
+            List of dictionaries for each line:
+                {
+                    "bbox": (x, y, w, h),  # Global coordinates in page
+                    "crop": 2D np.ndarray line crop,
+                    "y_span": (y_start, y_end),  # Local to paragraph
+                    "paragraph_idx": int
+                }
+        """
+        foreground_mask = ImagePreprocessor.invert_to_foreground_mask(binary_image)
+        paragraphs = ImagePreprocessor.segment_paragraphs(foreground_mask)
+        all_lines: list[dict[str, Any]] = []
+
+        for p_idx, para in enumerate(paragraphs):
+            para_crop = para["crop"]
+            para_x, para_y, _, _ = para["bbox"]
+
+            # Compute horizontal projection profile across the paragraph crop
+            h_profile = np.sum(para_crop > 0, axis=1)
+            raw_spans = ImagePreprocessor.find_projection_profile_segments(
+                h_profile,
+                threshold=0,
+                min_size=min_line_height,
+                min_gap=min_gap,
+            )
+
+            for y_s, y_e in raw_spans:
+                line_slice = para_crop[y_s:y_e, :]
+                v_profile = np.sum(line_slice > 0, axis=0)
+                fg_cols = np.where(v_profile > 0)[0]
+                if fg_cols.size == 0:
+                    continue
+                x_s = int(fg_cols[0])
+                x_e = int(fg_cols[-1]) + 1
+
+                line_crop = line_slice[:, x_s:x_e]
+                global_bbox = (int(para_x + x_s), int(para_y + y_s), int(x_e - x_s), int(y_e - y_s))
+
+                all_lines.append({
+                    "bbox": global_bbox,
+                    "crop": line_crop,
+                    "y_span": (y_s, y_e),
+                    "paragraph_idx": p_idx,
+                })
+
+        return all_lines

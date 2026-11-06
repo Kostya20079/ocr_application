@@ -75,9 +75,8 @@ class TestImagePreprocessor(unittest.TestCase):
     def test_segment_paragraphs_on_sample(self):
         """Test paragraph segmentation on text_sample.png."""
         binary_img = ImagePreprocessor.otsu(self.image)
-        fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary_img)
 
-        paragraphs = ImagePreprocessor.segment_paragraphs(fg_mask)
+        paragraphs = ImagePreprocessor.segment_paragraphs(binary_img)
         self.assertIsInstance(paragraphs, list)
         self.assertGreater(len(paragraphs), 0)
 
@@ -91,6 +90,21 @@ class TestImagePreprocessor(unittest.TestCase):
             self.assertGreater(h, 0)
             self.assertEqual(para["crop"].shape, (h, w))
             self.assertGreater(len(para["line_spans"]), 0)
+
+    def test_segment_lines_preserves_paragraph_hierarchy(self):
+        """Test segment_lines on 2D binary array preserves sequential ordering of paragraphs."""
+        binary_img = ImagePreprocessor.otsu(self.image)
+        fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary_img)
+
+        lines = ImagePreprocessor.segment_lines(fg_mask)
+        self.assertIsInstance(lines, list)
+        self.assertEqual(len(lines), 24)
+
+        # Verify paragraph_idx is non-decreasing (sequential rows per paragraph)
+        para_indices = [line["paragraph_idx"] for line in lines]
+        self.assertEqual(para_indices, sorted(para_indices))
+        # Ensure we detected multiple paragraphs
+        self.assertGreater(len(set(para_indices)), 1)
 
 
 if __name__ == "__main__":
