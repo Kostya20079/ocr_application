@@ -14,7 +14,7 @@ from src.utils.helpers import get_resource_path
 
 
 def visualize_segmented_paragraphs():
-    sample_path = get_resource_path("data/samples/text_sample.png")
+    sample_path = get_resource_path("data/samples/text_sample1.png")
     if not sample_path.exists():
         sample_path = Path(__file__).resolve().parent.parent / "data" / "samples" / "text_sample.png"
 

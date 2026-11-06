@@ -107,10 +107,11 @@ class ImagePreprocessor:
 
         white_pixels = np.count_nonzero(binary_image == 255)
         black_pixels = np.count_nonzero(binary_image == 0)
+        total = white_pixels + black_pixels
 
-        # In standard documents, background covers the majority of the page (> 50%)
-        # If white pixels dominate, the background is 255, so we invert
-        if white_pixels > black_pixels:
+        white_ratio = white_pixels / max(1, total)
+
+        if white_ratio > 0.5:
             return np.where(binary_image == 255, 0, 255).astype(np.uint8)
 
         return binary_image.astype(np.uint8)
@@ -270,8 +271,13 @@ class ImagePreprocessor:
             positive_gaps = [g for g in gaps if g > 0]
             median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
 
-            # Vertical spacing break threshold
-            vertical_gap_thresh = max(median_gap * gap_multiplier, median_gap + 4)
+            median_line_height = float(np.median([l["height"] for l in line_info]))
+
+            vertical_gap_thresh = max(
+                median_gap * gap_multiplier,
+                median_gap + 4,
+                median_line_height * 0.5,
+            )
 
             line_groups = []
             current_group = [line_info[0]["y_span"]]
