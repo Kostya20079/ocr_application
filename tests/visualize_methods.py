@@ -73,7 +73,7 @@ def visualize_segmented_paragraphs(image):
     fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary)
 
     axes[0].imshow(fg_mask, cmap="gray")
-    axes[0].set_title("Normalized Foreground Mask (Step 3)")
+    axes[0].set_title("Normalized Foreground Mask")
     axes[0].axis("off")
 
     axes[1].imshow(vis_image)
@@ -141,8 +141,37 @@ def visualize_segmented_lines(image):
     plt.show()
 
 
+def visualize_segmented_characters(image, line_idx: int = 2):
+    binary = ImagePreprocessor.otsu(image)
+    fg_mask = ImagePreprocessor.invert_to_foreground_mask(binary)
+
+    lines = ImagePreprocessor.segment_lines(fg_mask)
+
+    target_line = lines[line_idx]
+    line_crop = target_line["crop"]
+    characters = ImagePreprocessor.segment_characters_and_spaces(line_crop)
+
+    print(f"Visualizing Line {line_idx + 1}: Found {len(characters)} characters, "
+          f"{sum(1 for c in characters if c['is_space_before'])} spaces")
+
+    vis_line = cv2.cvtColor(line_crop, cv2.COLOR_GRAY2RGB)
+
+    for c_idx, char in enumerate(characters):
+        cx, cy, cw, ch = char["bbox"]
+        cv2.rectangle(vis_line, (cx, cy), (cx + cw, cy + ch), (0, 255, 0), 1)
+
+        if char["is_space_before"]:
+            cv2.line(vis_line, (max(0, cx - 2), 0), (max(0, cx - 2), line_crop.shape[0]), (255, 140, 0), 2)
+
+    fig, ax = plt.subplots(figsize=(14, 3))
+    ax.imshow(vis_line)
+    ax.set_title(f"Segmented Characters & Spaces on Line {line_idx + 1} (Green=Glyph, Orange=Space)")
+    ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
-    img_name = "text_sample.png"
+    img_name = "text_sample1.png"
     sample_path = get_resource_path(f"data/samples/{img_name}")
     if not sample_path.exists():
         sample_path = get_resource_path(f"data/samples/{img_name}")
@@ -154,3 +183,4 @@ if __name__ == "__main__":
 
     visualize_segmented_paragraphs(image)
     visualize_segmented_lines(image)
+    visualize_segmented_characters(image, 1)

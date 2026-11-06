@@ -401,3 +401,92 @@ class ImagePreprocessor:
                 })
 
         return all_lines
+
+    @staticmethod
+    def segment_characters_and_spaces(
+        binary_line: np.ndarray,
+        space_ratio_threshold: float = 0.5,
+        min_char_width: int = 1,
+        min_char_height: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Segments a 2D binary text line into individual character glyphs and detects word spaces.
+
+        Uses the vertical projection profile (column-wise sum of foreground pixels)
+        to identify discrete glyph boundaries [x_start, x_end). Inter-character
+        horizontal whitespace gaps are analyzed: gaps significantly larger than
+        intra-word spacing (typically >= space_ratio_threshold * median_char_width)
+        are flagged with `is_space_before = True` to reconstruct word boundaries.
+
+        Args:
+            binary_line: 2D binary numpy array representing a single line crop (text=255, bg=0).
+            space_ratio_threshold: Multiplier of median character width to trigger word space.
+            min_char_width: Minimum width in pixels to filter out noise.
+            min_char_height: Minimum height in pixels to filter out noise.
+
+        Returns:
+            List of character dictionaries:
+                {
+                    "bbox": (x, y, w, h),      # Local to binary_line crop
+                    "crop": 2D np.ndarray,     # Tight crop of the character glyph
+                    "is_space_before": bool,   # True if a word space precedes this character
+                }
+        """
+        line_mask = ImagePreprocessor.invert_to_foreground_mask(binary_line)
+
+        # Vertical projection profile: sum along columns
+        v_profile = np.sum(line_mask > 0, axis=0)
+
+        # Detect glyph intervals along the horizontal axis
+        x_spans = ImagePreprocessor.find_projection_profile_segments(
+            v_profile,
+            threshold=0,
+            min_size=min_char_width,
+            min_gap=1,
+        )
+
+        if not x_spans:
+            return []
+
+        # Calculate character widths and inter-character gaps
+        char_widths = [span[1] - span[0] for span in x_spans]
+        median_char_width = float(np.median(char_widths)) if char_widths else 10.0
+
+        gaps = [x_spans[i + 1][0] - x_spans[i][1] for i in range(len(x_spans) - 1)]
+        positive_gaps = [g for g in gaps if g > 0]
+        median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
+
+        # Space threshold: whichever is more conservative between a fraction of char width or multiple of inter-char gap
+        space_threshold = max(median_char_width * space_ratio_threshold, median_gap * 2.2, 4.0)
+
+        characters: list[dict[str, Any]] = []
+
+        for idx, (x_s, x_e) in enumerate(x_spans):
+            # Check if this character is preceded by a word space
+            is_space_before = False
+            if idx > 0:
+                prev_x_e = x_spans[idx - 1][1]
+                gap = x_s - prev_x_e
+                if gap >= space_threshold:
+                    is_space_before = True
+
+            # Tight vertical slice to get accurate character height
+            glyph_slice = line_mask[:, x_s:x_e]
+            fg_rows = np.where(np.sum(glyph_slice > 0, axis=1) > 0)[0]
+            if fg_rows.size == 0:
+                continue
+
+            y_s = int(fg_rows[0])
+            y_e = int(fg_rows[-1]) + 1
+
+            if (y_e - y_s) < min_char_height:
+                continue
+
+            tight_char_crop = glyph_slice[y_s:y_e, :]
+
+            characters.append({
+                "bbox": (int(x_s), int(y_s), int(x_e - x_s), int(y_e - y_s)),
+                "crop": tight_char_crop,
+                "is_space_before": is_space_before,
+            })
+
+        return characters

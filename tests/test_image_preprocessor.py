@@ -106,6 +106,30 @@ class TestImagePreprocessor(unittest.TestCase):
         # Ensure we detected multiple paragraphs
         self.assertGreater(len(set(para_indices)), 1)
 
+    def test_segment_characters_and_spaces(self):
+        """Test segment_characters_and_spaces on a segmented line crop."""
+        binary_img = ImagePreprocessor.otsu(self.image)
+
+        lines = ImagePreprocessor.segment_lines(binary_img)
+        sample_line = lines[2]
+
+        characters = ImagePreprocessor.segment_characters_and_spaces(sample_line["crop"])
+        self.assertIsInstance(characters, list)
+        self.assertGreater(len(characters), 0)
+
+        for char in characters:
+            self.assertIn("bbox", char)
+            self.assertIn("crop", char)
+            self.assertIn("is_space_before", char)
+
+            x, y, w, h = char["bbox"]
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+            self.assertEqual(char["crop"].shape, (h, w))
+
+        spaces_count = sum(1 for c in characters if c["is_space_before"])
+        self.assertGreater(spaces_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
