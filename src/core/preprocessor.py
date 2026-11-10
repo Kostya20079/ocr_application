@@ -523,7 +523,10 @@ class ImagePreprocessor:
         Returns:
             Normalized 2D uint8 numpy array with shape (target_size[1], target_size[0]).
         """
-        crop_mask = ImagePreprocessor.invert_to_foreground_mask(char_crop)
+        if np.count_nonzero(char_crop == 0) == 0 and np.any(char_crop > 0):
+            crop_mask = np.asarray(char_crop, dtype=np.uint8)
+        else:
+            crop_mask = ImagePreprocessor.invert_to_foreground_mask(char_crop)
         target_w, target_h = target_size
 
         fg_indices = np.argwhere(crop_mask > 0)
