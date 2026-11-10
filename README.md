@@ -18,34 +18,39 @@ The application includes / plans 3 independent OCR engines:
 ```text
 ocr_application/
 ├── data/
-│   ├── samples/               # Sample images for instant testing
-│   ├── templates/             # Character templates for the Template Matching engine
-│   └── models/                # Trained model weights (k-NN, TensorFlow/Keras)
-├── locales/                   # Internationalization / Localization files
-│   ├── pl/messages.json       # Polish translations (Default)
-│   └── en/messages.json       # English translations
+│   ├── samples/                    # Sample images for instant testing
+│   │   ├── text_sample.png         # Light-background text sample
+│   │   └── text_sample1.png        # Dark-background text sample (terminal screenshot)
+│   ├── templates/                  # Character templates for Template Matching engine (git-ignored)
+│   └── models/                     # Trained model weights (k-NN, TensorFlow/Keras)
+├── locales/                        # Internationalization / Localization files
+│   ├── pl/messages.json            # Polish translations (Default)
+│   └── en/messages.json            # English translations
 ├── src/
 │   ├── app/
-│   │   ├── config.py          # App configuration, constants, resource paths
+│   │   ├── config.py               # App configuration, constants, resource paths
 │   │   └── gui/
-│   │       ├── main_window.py # Main GUI window (image preview, engine selector, language switcher, text copier)
-│   │       └── components/    # Reusable UI components
+│   │       └── main_window.py      # Main GUI window (image preview, engine selector, language switcher, text copier)
 │   ├── core/
-│   │   ├── base.py            # BaseOCREngine abstract base class (unified engine interface)
-│   │   └── preprocessor.py    # Image preprocessing (grayscale, binarization, denoising, segmentation)
+│   │   ├── base.py                 # BaseOCREngine abstract base class (unified engine interface)
+│   │   └── preprocessor.py         # ImagePreprocessor: grayscale, Otsu binarization, paragraph/line/character segmentation, normalization
 │   ├── engines/
-│   │   ├── template_matching.py # Engine 1: Template Matching
-│   │   ├── hog_knn.py           # Engine 2: HOG + k-NN
-│   │   └── tf_model.py          # Engine 3: Custom TensorFlow CNN
+│   │   ├── template_matching.py    # Engine 1: Template Matching
+│   │   ├── hog_knn.py              # Engine 2: HOG + k-NN
+│   │   └── tf_model.py             # Engine 3: Custom TensorFlow CNN
 │   └── utils/
-│       ├── helpers.py         # Resource path resolution (compatible with PyInstaller sys._MEIPASS)
-│       └── language.py        # Language support manager (PL & EN)
-├── tests/                     # Unit tests for preprocessing, engines, and utilities
-│   └── test_skeleton.py
+│       ├── helpers.py              # Resource path resolution (compatible with PyInstaller sys._MEIPASS)
+│       └── language.py             # Language support manager (PL & EN)
+├── tests/
+│   ├── test_skeleton.py            # Skeleton / smoke tests
+│   ├── test_image_preprocessor.py  # Unit tests for ImagePreprocessor pipeline
+│   └── visualize_methods.py        # Visual inspection of segmentation pipeline (paragraphs, lines, characters, normalization)
 ├── scripts/
-│   └── build_exe.py           # Automated build script to compile to a standalone .exe
-├── app.py                     # Main application entry point
-├── requirements.txt           # Project dependencies
+│   ├── build_exe.py                # Automated build script to compile to a standalone .exe
+│   └── generate_templates.py       # Generates normalized 32×32 character templates for Template Matching
+├── app.py                          # Main application entry point
+├── requirements.txt                # Project dependencies
+├── .gitignore
 └── README.md
 ```
 
@@ -78,6 +83,23 @@ python app.py
 ```bash
 python -m unittest discover tests
 ```
+
+### Visualizing Preprocessing & Segmentation Pipeline
+To visually inspect binarization, paragraph grouping, line isolation, character segmentation, and glyph normalization:
+```bash
+python tests/visualize_methods.py
+```
+
+### Generating Character Templates Dataset
+To generate normalized character templates for the Template Matching engine:
+```bash
+# Generate standard Latin letters (A-Z, a-z):
+python scripts/generate_templates.py --letters-only --size 32
+
+# Or generate all standard letters, digits, and punctuation:
+python scripts/generate_templates.py --size 32
+```
+*Note: Generated image files in `data/templates/` are excluded from git via `.gitignore` to keep repository size lean. Run this script whenever you need to produce or refresh templates.*
 
 ---
 
