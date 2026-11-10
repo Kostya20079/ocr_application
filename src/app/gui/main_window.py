@@ -137,7 +137,8 @@ class OCRAppGUI:
             samples = [f.name for f in SAMPLES_DIR.iterdir() if f.is_file() and f.suffix.lower() in [".png", ".jpg", ".jpeg", ".bmp"]]
             if samples:
                 self.samples_combo["values"] = samples
-                self.samples_combo.set(language("sample_select_placeholder"))
+                self.samples_combo.current(0)
+                self._on_sample_selected()
             else:
                 self.samples_combo["values"] = [language("sample_no_files")]
                 self.samples_combo.current(0)
@@ -191,12 +192,19 @@ class OCRAppGUI:
         self.root.update_idletasks()
 
         try:
+            image_name = self.selected_image_path.name if self.selected_image_path else None
             if Image is not None:
                 import numpy as np
                 img_np = np.array(Image.open(self.selected_image_path))
-                result = engine.recognize(img_np)
+                try:
+                    result = engine.recognize(img_np, image_name=image_name)
+                except TypeError:
+                    result = engine.recognize(img_np)
             else:
-                result = engine.recognize(self.selected_image_path)
+                try:
+                    result = engine.recognize(self.selected_image_path, image_name=image_name)
+                except TypeError:
+                    result = engine.recognize(self.selected_image_path)
             self.text_result.delete("1.0", tk.END)
             self.text_result.insert(tk.END, result)
             self.lbl_status.config(text=language("status_done"))
