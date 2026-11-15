@@ -8,7 +8,7 @@ Desktop application for optical character recognition (OCR) with a graphical use
 
 The application includes / plans 3 independent OCR engines:
 1. **Template Matching** – A classical approach that compares cropped character segments against a set of reference character templates (`data/templates/`).
-2. **HOG + k-NN** – Feature extraction using Histogram of Oriented Gradients (HOG) combined with a k-Nearest Neighbors (k-NN) classifier.
+2. **HOG + k-NN** – Feature extraction using Histogram of Oriented Gradients (HOG) combined with a k-Nearest Neighbors (k-NN) classifier (trained via `scripts/train_hog_knn.py` and cached at `data/models/hog_knn_model.pkl`).
 3. **Custom TensorFlow Model + OpenCV** – A custom deep convolutional neural network (CNN) trained in TensorFlow/Keras integrated with OpenCV for document layout analysis, contour detection, and character/line segmentation.
 
 ---
@@ -47,7 +47,8 @@ ocr_application/
 │   └── visualize_methods.py        # Visual inspection of segmentation pipeline (paragraphs, lines, characters, normalization)
 ├── scripts/
 │   ├── build_exe.py                # Automated build script to compile to a standalone .exe
-│   └── generate_templates.py       # Generates normalized 32×32 character templates for Template Matching
+│   ├── generate_templates.py       # Generates normalized 32×32 character templates for OCR engines
+│   └── train_hog_knn.py            # MLOps pipeline script to train and serialize the HOG + k-NN model
 ├── app.py                          # Main application entry point
 ├── requirements.txt                # Project dependencies
 ├── .gitignore
@@ -91,7 +92,7 @@ python tests/visualize_methods.py
 ```
 
 ### Generating Character Templates Dataset
-To generate normalized character templates for the Template Matching engine:
+To generate normalized character templates for the Template Matching and HOG + k-NN engines:
 ```bash
 # Generate standard Latin letters (A-Z, a-z):
 python scripts/generate_templates.py --letters-only --size 32
@@ -100,6 +101,27 @@ python scripts/generate_templates.py --letters-only --size 32
 python scripts/generate_templates.py --size 32
 ```
 *Note: Generated image files in `data/templates/` are excluded from git via `.gitignore` to keep repository size lean. Run this script whenever you need to produce or refresh templates.*
+
+### Training HOG + k-NN Model
+The HOG + k-NN engine uses pre-trained weights serialized to `data/models/hog_knn_model.pkl`. To train or retrain the classifier using the template dataset:
+
+```bash
+# Train on data/templates and save to data/models/hog_knn_model.pkl:
+python scripts/train_hog_knn.py
+
+# Optional: customize template directory, destination path, or k neighbors:
+python scripts/train_hog_knn.py --templates-dir data/templates --output-model data/models/hog_knn_model.pkl -k 1
+
+# Train with verbose logging:
+python scripts/train_hog_knn.py -v
+```
+
+The training pipeline automatically:
+1. Validates the templates directory and metadata index (`data/templates/index.json`).
+2. Extracts 324-dimensional HOG feature vectors for each template image.
+3. Fits the k-NN classifier (`k=1`, Euclidean distance).
+4. Executes quality gate verification on sample text (`data/samples/text-sample2.png`).
+5. Serializes the trained model artifact to `data/models/hog_knn_model.pkl`.
 
 ---
 

@@ -82,7 +82,7 @@ class TestHogKnnOCR(unittest.TestCase):
             self.engine.save(temp_model_path)
             self.assertTrue(temp_model_path.exists())
 
-            new_engine = HogKnnOCR(model_path=temp_model_path, auto_train_on_templates=False)
+            new_engine = HogKnnOCR(model_path=temp_model_path)
             self.assertTrue(new_engine.is_trained)
             self.assertIsNotNone(new_engine.classifier)
 
@@ -90,6 +90,34 @@ class TestHogKnnOCR(unittest.TestCase):
             char1 = self.engine.predict_glyph(dummy_glyph)
             char2 = new_engine.predict_glyph(dummy_glyph)
             self.assertEqual(char1, char2)
+
+    def test_recognize_text_sample2(self):
+        """Test recognition of Hello World sample image with quotes and punctuation."""
+        sample2_path = get_resource_path("data/samples/text-sample1.png")
+        if not sample2_path.exists():
+            sample2_path = Path(__file__).resolve().parent.parent / "data" / "samples" / "text-sample1.png"
+
+        if not sample2_path.exists():
+            self.skipTest("text-sample1.png not found")
+
+        img = cv2.imread(str(sample2_path))
+        text = self.engine.recognize(img)
+        self.assertEqual(text, '"Hello, World"')
+
+    def test_train_script_execution(self):
+        """Test training pipeline function saves artifact and executes cleanly."""
+        from scripts.train_hog_knn import train_hog_knn
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_model_path = Path(tmp_dir) / "test_trained_model.pkl"
+            out = train_hog_knn(
+                output_model=temp_model_path,
+                n_neighbors=1,
+                test_sample=None,
+            )
+            self.assertEqual(out, temp_model_path)
+            self.assertTrue(temp_model_path.exists())
+            self.assertGreater(temp_model_path.stat().st_size, 1000)
 
 
 if __name__ == "__main__":

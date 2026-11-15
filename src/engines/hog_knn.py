@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
 import pickle
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -32,39 +30,38 @@ class HogKnnOCR(BaseOCREngine):
     def __init__(
         self,
         model_path: Path | str | None = None,
-        templates_dir: Path | str | None = None,
         n_neighbors: int = 1,
-        auto_train_on_templates: bool = True,
     ) -> None:
         """Initializes the HOG + k-NN OCR Engine.
 
         Args:
             model_path: Optional path to a serialized trained model file (.pkl).
-            templates_dir: Optional path to the templates directory (defaults to data/templates).
+                Defaults to data/models/hog_knn_model.pkl.
             n_neighbors: Number of neighbors for the k-NN classifier.
-            auto_train_on_templates: Whether to automatically train or fit from templates
-                if no pre-trained model file exists at `model_path`.
         """
         super().__init__(name="HOG + k-NN")
 
         self.model_path = Path(model_path) if model_path else None
-        self.templates_dir = Path(templates_dir) if templates_dir else get_resource_path("data/templates")
         self.n_neighbors = n_neighbors
-        self.auto_train_on_templates = auto_train_on_templates
 
         self.classifier: KNeighborsClassifier | None = None
         self.is_trained: bool = False
 
         self._initialize_model()
 
+    @property
+    def is_ready(self) -> bool:
+        """Returns True if the k-NN classifier is loaded and ready for inference."""
+        return self.is_trained and self.classifier is not None
+
     def _initialize_model(self) -> None:
-        """Loads a model from model_path, or trains on templates if auto_train_on_templates is True."""
+        """Loads a model from model_path or the default model artifact location."""
         if self.model_path and self.model_path.exists():
             try:
                 self.load(self.model_path)
                 return
             except Exception as e:
-                logger.warning("Failed to load model from %s: %s. Falling back to templates.", self.model_path, e)
+                logger.warning("Failed to load model from %s: %s.", self.model_path, e)
 
         default_model = get_resource_path("data/models/hog_knn_model.pkl")
         if default_model.exists():
@@ -73,9 +70,8 @@ class HogKnnOCR(BaseOCREngine):
                 return
             except Exception as e:
                 logger.warning("Failed to load default model from %s: %s.", default_model, e)
-
-        if self.auto_train_on_templates and self.templates_dir.exists():
-            self.train_from_templates(self.templates_dir)
+        else:
+            logger.info("No pre-trained model found at %s. Run scripts/train_hog_knn.py to train.", default_model)
 
     def extract_hog_features(self, image: np.ndarray) -> np.ndarray:
         """Extracts HOG descriptor feature vector from a single normalized glyph image.
@@ -100,69 +96,6 @@ class HogKnnOCR(BaseOCREngine):
             block_norm=self.DEFAULT_BLOCK_NORM,
         )
         return np.asarray(features, dtype=np.float32)
-
-    def train(self, features: np.ndarray, labels: list[str] | np.ndarray) -> None:
-        """Fits the k-NN classifier on provided feature vectors and label targets.
-
-        Args:
-            features: 2D numpy array of shape (N, feature_dim).
-            labels: List or 1D array of character string labels of length N.
-        """
-        X = np.asarray(features, dtype=np.float32)
-        y = np.asarray(labels)
-
-        if len(X) == 0:
-            raise ValueError("Training dataset cannot be empty.")
-        if len(X) != len(y):
-            raise ValueError(f"Features length ({len(X)}) does not match labels length ({len(y)}).")
-
-        self.classifier = KNeighborsClassifier(n_neighbors=self.n_neighbors, metric="euclidean")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=UserWarning)
-            self.classifier.fit(X, y)
-
-        self.is_trained = True
-
-    def train_from_templates(self, templates_dir: Path | str | None = None) -> None:
-        """Builds dataset and fits k-NN using template images and index.json.
-
-        Args:
-            templates_dir: Directory containing template PNG files and index.json.
-        """
-        t_dir = Path(templates_dir) if templates_dir else self.templates_dir
-        index_path = t_dir / "index.json"
-
-        if not index_path.exists():
-            logger.warning("Templates index file not found at: %s", index_path)
-            return
-
-        with open(index_path, "r", encoding="utf-8") as f:
-            metadata: list[dict[str, Any]] = json.load(f)
-
-        features: list[np.ndarray] = []
-        labels: list[str] = []
-
-        for entry in metadata:
-            filename = entry.get("filename")
-            char = entry.get("char")
-            if not filename or char is None:
-                continue
-
-            img_path = t_dir / filename
-            if not img_path.exists():
-                continue
-
-            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-
-            feat = self.extract_hog_features(img)
-            features.append(feat)
-            labels.append(char)
-
-        if features:
-            self.train(np.array(features, dtype=np.float32), labels)
-            logger.info("Trained HOG + k-NN model on %d templates.", len(features))
 
     def save(self, file_path: Path | str) -> None:
         """Serializes and saves the trained classifier to disk.
@@ -208,6 +141,7 @@ class HogKnnOCR(BaseOCREngine):
         normalized = ImagePreprocessor.normalize_character(
             glyph_crop,
             target_size=self.DEFAULT_NORMALIZED_SIZE,
+            is_foreground=True,
         )
         feat = self.extract_hog_features(normalized)
         prediction = self.classifier.predict([feat])
@@ -256,7 +190,17 @@ class HogKnnOCR(BaseOCREngine):
         # Collect glyphs along with paragraph and line indices for batch prediction
         all_features: list[np.ndarray] = []
         char_locations: list[tuple[int, int, bool]] = []  # (para_idx, line_idx, is_space_before)
+        char_meta: list[tuple[int, int, int, int, int, int, bool]] = []  # (cx, cy, cw, ch, line_h, line_median_h, has_hole)
         para_line_counts: dict[int, int] = {}
+
+        def _has_closed_loop(glyph: np.ndarray) -> bool:
+            contours, hierarchy = cv2.findContours(glyph.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            if hierarchy is None:
+                return False
+            for h in hierarchy[0]:
+                if h[2] != -1:
+                    return True
+            return False
 
         for p_idx, para in enumerate(paragraphs):
             para_crop = para["crop"]
@@ -278,15 +222,32 @@ class HogKnnOCR(BaseOCREngine):
                 if not chars:
                     continue
 
+                line_h = line_slice.shape[0]
+                char_hs = [c["bbox"][3] for c in chars if c["bbox"][3] > 6]
+                sorted_hs = sorted(char_hs)
+                line_median_h = int(sorted_hs[len(sorted_hs) // 3]) if sorted_hs else 14
+
                 for char_dict in chars:
                     glyph_crop = char_dict["crop"]
                     normalized = ImagePreprocessor.normalize_character(
                         glyph_crop,
                         target_size=self.DEFAULT_NORMALIZED_SIZE,
+                        is_foreground=True,
                     )
                     feat = self.extract_hog_features(normalized)
                     all_features.append(feat)
                     char_locations.append((p_idx, l_idx, char_dict.get("is_space_before", False)))
+                    bx, by, bw, bh = char_dict["bbox"]
+                    has_loop = _has_closed_loop(glyph_crop)
+                    char_meta.append((
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        line_h,
+                        line_median_h,
+                        has_loop,
+                    ))
 
         if not all_features:
             return ""
@@ -294,9 +255,58 @@ class HogKnnOCR(BaseOCREngine):
         # Batch predict all characters at once with k-NN
         predictions = self.classifier.predict(np.asarray(all_features, dtype=np.float32))
 
-        # Reconstruct text hierarchy
+        # Reconstruct text hierarchy with typographic case disambiguation and homoglyph correction
         structured_text: dict[int, dict[int, list[str]]] = {}
-        for (p_idx, l_idx, is_space_before), char_pred in zip(char_locations, predictions, strict=True):
+        for (p_idx, l_idx, is_space_before), char_pred, (cx, cy, cw, ch, lh, med_h, has_loop) in zip(
+            char_locations, predictions, char_meta, strict=True
+        ):
+            pred_str = str(char_pred)
+
+            # 1. Topological loop disambiguation for b vs h
+            if pred_str == "b" and not has_loop:
+                pred_str = "h"
+            elif pred_str == "h" and has_loop:
+                pred_str = "b"
+
+            # 2. Case disambiguation for homoglyphs (C/c, S/s, V/v, W/w, Z/z, X/x, U/u)
+            # If inside a word (not preceded by space/boundary), ambiguous letters are lowercase
+            is_word_initial = is_space_before or (p_idx not in structured_text) or (l_idx not in structured_text[p_idx]) or (not structured_text[p_idx][l_idx])
+            if pred_str in ("C", "S", "V", "W", "Z", "X", "U"):
+                if not is_word_initial and ch <= int(med_h * 1.25):
+                    pred_str = pred_str.lower()
+                elif is_word_initial and ch <= int(med_h * 0.95) and cy >= int(lh * 0.2):
+                    pred_str = pred_str.lower()
+            elif pred_str in ("c", "s", "v", "w", "z", "x", "u"):
+                if is_word_initial and (ch >= int(med_h * 1.1) or cy <= int(lh * 0.15)):
+                    pred_str = pred_str.upper()
+
+            # 3. p vs P (lowercase p has a descender reaching bottom of line)
+            if pred_str == "P" and (cy + ch) >= int(lh * 0.85):
+                pred_str = "p"
+            elif pred_str == "p" and (cy + ch) <= int(lh * 0.78) and cy <= int(lh * 0.15):
+                pred_str = "P"
+
+            # 4. y vs Y (lowercase y has descender)
+            if pred_str == "Y" and (cy + ch) >= int(lh * 0.85):
+                pred_str = "y"
+
+            # 5. O vs o vs 0
+            if pred_str in ("O", "0") and ch <= int(med_h * 1.18) and cy >= int(lh * 0.12):
+                pred_str = "o"
+            elif pred_str == "o" and (ch >= int(med_h * 1.35) or cy <= int(lh * 0.05)):
+                pred_str = "O"
+
+            # 6. Punctuation disambiguation
+            if pred_str in ("’", "'", "‘", "}"):
+                if cy >= int(lh * 0.45):
+                    pred_str = ","
+                else:
+                    pred_str = "'"
+            elif pred_str in (":", ";") and ch <= 7 and cw <= 7 and (cy + ch) >= int(lh * 0.65):
+                pred_str = "."
+            elif pred_str == "+" and cw / max(1, ch) >= 1.4 and ch <= 8:
+                pred_str = "-"
+
             if p_idx not in structured_text:
                 structured_text[p_idx] = {}
             if l_idx not in structured_text[p_idx]:
@@ -304,13 +314,35 @@ class HogKnnOCR(BaseOCREngine):
 
             if is_space_before:
                 structured_text[p_idx][l_idx].append(" ")
-            structured_text[p_idx][l_idx].append(str(char_pred))
+            structured_text[p_idx][l_idx].append(pred_str)
 
         recognized_paragraphs: list[str] = []
         for p_idx in sorted(structured_text.keys()):
             para_lines = structured_text[p_idx]
-            lines_str = ["".join(para_lines[l_idx]) for l_idx in sorted(para_lines.keys())]
-            if lines_str:
-                recognized_paragraphs.append("\n".join(lines_str))
+            clean_lines = []
+            for l_idx in sorted(para_lines.keys()):
+                raw_line = "".join(para_lines[l_idx])
+                # Post-processing: disambiguate digits embedded in alphabetic words
+                # e.g. 'wa11' -> 'wall', 'b1ue' -> 'blue', 'ca1led' -> 'called', 'fr0m' -> 'from'
+                chars_list = list(raw_line)
+                for ci in range(len(chars_list)):
+                    ch_cur = chars_list[ci]
+                    prev_c = chars_list[ci - 1] if ci > 0 else " "
+                    next_c = chars_list[ci + 1] if ci < len(chars_list) - 1 else " "
+
+                    # 1 vs l in word context
+                    if ch_cur == "1" and (prev_c.isalpha() or next_c.isalpha()):
+                        chars_list[ci] = "l"
+                    # I at end of lowercase word, e.g. 'stilI' -> 'still'
+                    elif ch_cur == "I" and prev_c.islower() and (next_c == " " or not next_c.isalpha()):
+                        chars_list[ci] = "l"
+                    # 0 in word context
+                    elif ch_cur == "0" and (prev_c.islower() or next_c.islower()):
+                        chars_list[ci] = "o"
+
+                clean_lines.append("".join(chars_list))
+
+            if clean_lines:
+                recognized_paragraphs.append("\n".join(clean_lines))
 
         return "\n\n".join(recognized_paragraphs)
