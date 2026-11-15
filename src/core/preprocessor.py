@@ -122,7 +122,7 @@ class ImagePreprocessor:
         profile: np.ndarray,
         threshold: float = 0.0,
         min_size: int = 2,
-        min_gap: int = 1,
+        min_gap: int = 0.7,
     ) -> list[tuple[int, int]]:
         """Segments a 1D projection profile into contiguous active intervals [start, end).
 
@@ -409,19 +409,9 @@ class ImagePreprocessor:
         space_ratio_threshold: float = 0.5,
         min_char_width: int = 1,
         min_char_height: int = 2,
-        min_aspect_ratio_for_thin: float = 3.0,
+        min_aspect_ratio_for_thin: float = 2.0,
     ) -> list[dict[str, Any]]:
         """Segments a 2D binary text line into individual character glyphs and detects word spaces.
-
-        Uses the vertical projection profile (column-wise sum of foreground pixels)
-        to identify discrete glyph boundaries [x_start, x_end). Inter-character
-        horizontal whitespace gaps are analyzed: gaps significantly larger than
-        intra-word spacing (typically >= space_ratio_threshold * median_char_width)
-        are flagged with `is_space_before = True` to reconstruct word boundaries.
-
-        Thin but wide characters like hyphens (-), underscores (_), and equals (=)
-        are preserved even when their height is below min_char_height, as long as
-        their width-to-height aspect ratio exceeds min_aspect_ratio_for_thin.
 
         Args:
             binary_line: 2D binary numpy array representing a single line crop (text=255, bg=0).
@@ -440,65 +430,220 @@ class ImagePreprocessor:
                 }
         """
         line_mask = ImagePreprocessor.invert_to_foreground_mask(binary_line)
-
-        # Vertical projection profile: sum along columns
-        v_profile = np.sum(line_mask > 0, axis=0)
-
-        # Detect glyph intervals along the horizontal axis
-        x_spans = ImagePreprocessor.find_projection_profile_segments(
-            v_profile,
-            threshold=0,
-            min_size=min_char_width,
-            min_gap=1,
-        )
-
-        if not x_spans:
+        if not np.any(line_mask > 0):
             return []
 
-        # Calculate character widths and inter-character gaps
-        char_widths = [span[1] - span[0] for span in x_spans]
-        median_char_width = float(np.median(char_widths)) if char_widths else 10.0
+        line_h, line_w = line_mask.shape[:2]
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(line_mask, connectivity=8)
+        if num_labels <= 1:
+            return []
 
-        gaps = [x_spans[i + 1][0] - x_spans[i][1] for i in range(len(x_spans) - 1)]
-        positive_gaps = [g for g in gaps if g > 0]
-        median_gap = float(np.median(positive_gaps)) if positive_gaps else 1.0
+        raw_comps: list[dict[str, Any]] = []
+        for i in range(1, num_labels):
+            x, y, w, h, area = stats[i]
+            if area < 2 or (w < min_char_width and h < min_char_height):
+                continue
+            comp_mask = (labels[y:y + h, x:x + w] == i).astype(np.uint8) * 255
+            raw_comps.append({
+                "x": int(x),
+                "y": int(y),
+                "w": int(w),
+                "h": int(h),
+                "area": int(area),
+                "mask": comp_mask,
+            })
 
-        space_threshold = max(median_char_width * space_ratio_threshold, median_gap * 2.2, 4.0)
+        if not raw_comps:
+            return []
+
+        # Compute median character width and height dynamically based on line height
+        normal_comps = [
+            c for c in raw_comps
+            if c["h"] >= max(5, int(line_h * 0.25)) and 0.2 <= (c["w"] / max(1, c["h"])) <= 1.6
+        ]
+        if normal_comps:
+            med_w = float(np.median([c["w"] for c in normal_comps]))
+            med_h = float(np.median([c["h"] for c in normal_comps]))
+        else:
+            med_w = float(np.median([c["w"] for c in raw_comps])) if raw_comps else 12.0
+            med_h = float(np.median([c["h"] for c in raw_comps])) if raw_comps else 14.0
+
+        # Split touching glyphs (e.g. 'Th' or serifs touching)
+        split_comps: list[dict[str, Any]] = []
+
+        def split_component(c: dict[str, Any]) -> list[dict[str, Any]]:
+            is_wide_cap = (c["h"] >= med_h * 1.25 and c["w"] >= med_w * 1.35)
+            is_very_wide = (c["w"] >= med_w * 2.2 and c["w"] >= 20)
+            if not (is_wide_cap or is_very_wide):
+                return [c]
+
+            v_prof = np.sum(c["mask"] > 0, axis=0)
+
+            # Check if this glyph is 'm' (three prominent vertical peaks and height ~ med_h)
+            if c["h"] <= int(med_h * 1.18) and c["w"] <= int(med_w * 2.1):
+                # Count peaks in v_prof that reach near character height
+                peak_thresh = int(c["h"] * 0.6)
+                peaks = []
+                for p_i in range(1, len(v_prof) - 1):
+                    if v_prof[p_i] >= peak_thresh and v_prof[p_i] >= v_prof[p_i - 1] and v_prof[p_i] >= v_prof[p_i + 1]:
+                        if not peaks or (p_i - peaks[-1]) >= 4:
+                            peaks.append(p_i)
+                if len(peaks) >= 3:
+                    return [c]  # It is 'm', keep intact
+
+            s = int(c["w"] * 0.25)
+            e = int(c["w"] * 0.75)
+            if e <= s:
+                return [c]
+
+            sub_prof = v_prof[s:e]
+            min_val = int(np.min(sub_prof))
+            max_valley_thresh = max(3, int(med_h * 0.25))
+            if min_val > max_valley_thresh and not (c["w"] >= med_w * 2.5):
+                return [c]
+
+            min_indices = np.where(sub_prof == min_val)[0] + s
+            valley_idx = int((min_indices[0] + min_indices[-1]) // 2) + 1
+            min_char_extent = max(5, int(med_w * 0.35))
+            if valley_idx < min_char_extent or (c["w"] - valley_idx) < min_char_extent:
+                return [c]
+
+            m1 = c["mask"][:, :valley_idx]
+            m2 = c["mask"][:, valley_idx:]
+            sub_results: list[dict[str, Any]] = []
+
+            for m, off in [(m1, 0), (m2, valley_idx)]:
+                fg = np.argwhere(m > 0)
+                if fg.size == 0:
+                    continue
+                y1, x1 = fg.min(axis=0)
+                y2, x2 = fg.max(axis=0) + 1
+                sub_c = {
+                    "x": c["x"] + off + int(x1),
+                    "y": c["y"] + int(y1),
+                    "w": int(x2 - x1),
+                    "h": int(y2 - y1),
+                    "area": len(fg),
+                    "mask": m[y1:y2, x1:x2],
+                }
+                # Recursively split if still exceptionally wide (e.g. 3+ letters joined)
+                if sub_c["w"] >= max(26, int(med_w * 2.2)):
+                    sub_results.extend(split_component(sub_c))
+                else:
+                    sub_results.append(sub_c)
+
+            return sub_results if sub_results else [c]
+
+        for c in raw_comps:
+            split_comps.extend(split_component(c))
+
+        # Sort candidate components from left to right
+        split_comps.sort(key=lambda comp: (comp["x"], comp["y"]))
+
+        # Group vertically aligned multi-component glyphs ('i', 'j', ':', ';', '!', '?', quotes)
+        merged_glyphs: list[dict[str, Any]] = []
+        used = set()
+
+        for i, c1 in enumerate(split_comps):
+            if i in used:
+                continue
+            found_partner = None
+
+            for j, c2 in enumerate(split_comps):
+                if i == j or j in used:
+                    continue
+
+                c1_mid = c1["x"] + c1["w"] / 2.0
+                c2_mid = c2["x"] + c2["w"] / 2.0
+                horiz_dist = abs(c1_mid - c2_mid)
+                overlap = min(c1["x"] + c1["w"], c2["x"] + c2["w"]) - max(c1["x"], c2["x"])
+
+                # 'i' or 'j': dot above stem
+                is_dot_above = (
+                    c2["h"] <= max(7, int(line_h * 0.2)) and c2["w"] <= max(8, int(med_w * 0.6))
+                    and c2["y"] < c1["y"]
+                    and (c1["y"] - (c2["y"] + c2["h"])) <= max(10, int(line_h * 0.25))
+                    and (horiz_dist <= max(6, int(med_w * 0.4)) or overlap > 0)
+                )
+                is_dot_below = (
+                    c1["h"] <= max(7, int(line_h * 0.2)) and c1["w"] <= max(8, int(med_w * 0.6))
+                    and c1["y"] < c2["y"]
+                    and (c2["y"] - (c1["y"] + c1["h"])) <= max(10, int(line_h * 0.25))
+                    and (horiz_dist <= max(6, int(med_w * 0.4)) or overlap > 0)
+                )
+                # ':' colon or ';' semicolon
+                is_colon = (
+                    c1["w"] <= max(7, int(med_w * 0.6)) and c2["w"] <= max(7, int(med_w * 0.6))
+                    and c1["h"] <= max(8, int(line_h * 0.22)) and c2["h"] <= max(10, int(line_h * 0.25))
+                    and abs(c1["x"] - c2["x"]) <= max(5, int(med_w * 0.4))
+                    and int(line_h * 0.15) <= abs(c1["y"] - c2["y"]) <= int(line_h * 0.55)
+                )
+                # Quotation marks (twin strokes high in line)
+                is_twin_quotes = (
+                    c1["y"] <= int(line_h * 0.35) and c2["y"] <= int(line_h * 0.35)
+                    and c1["w"] <= int(med_w * 0.8) and c2["w"] <= int(med_w * 0.8)
+                    and abs(c1["x"] - c2["x"]) <= int(med_w * 1.2)
+                    and abs(c1["y"] - c2["y"]) <= max(6, int(line_h * 0.15))
+                )
+
+                if is_dot_above or is_dot_below or is_colon or is_twin_quotes:
+                    found_partner = j
+                    break
+
+            if found_partner is not None:
+                c2 = split_comps[found_partner]
+                used.add(i)
+                used.add(found_partner)
+                min_x = min(c1["x"], c2["x"])
+                min_y = min(c1["y"], c2["y"])
+                max_x = max(c1["x"] + c1["w"], c2["x"] + c2["w"])
+                max_y = max(c1["y"] + c1["h"], c2["y"] + c2["h"])
+                combined_crop = line_mask[min_y:max_y, min_x:max_x]
+                merged_glyphs.append({
+                    "bbox": (int(min_x), int(min_y), int(max_x - min_x), int(max_y - min_y)),
+                    "crop": combined_crop,
+                    "x": min_x,
+                })
+            else:
+                used.add(i)
+                merged_glyphs.append({
+                    "bbox": (int(c1["x"]), int(c1["y"]), int(c1["w"]), int(c1["h"])),
+                    "crop": c1["mask"],
+                    "x": c1["x"],
+                })
+
+        # Sort final characters strictly in reading order
+        merged_glyphs.sort(key=lambda g: g["x"])
+
+        # Detect whitespace gaps
+        char_widths = [g["bbox"][2] for g in merged_glyphs]
+        median_char_width = float(np.median(char_widths)) if char_widths else med_w
+
+        inter_gaps = [
+            merged_glyphs[k + 1]["bbox"][0] - (merged_glyphs[k]["bbox"][0] + merged_glyphs[k]["bbox"][2])
+            for k in range(len(merged_glyphs) - 1)
+        ]
+        pos_gaps = [g for g in inter_gaps if g > 0]
+        median_gap = float(np.median(pos_gaps)) if pos_gaps else 1.0
+
+        space_threshold = max(
+            median_char_width * space_ratio_threshold,
+            median_gap * 2.2,
+            5.0,
+        )
 
         characters: list[dict[str, Any]] = []
-
-        for idx, (x_s, x_e) in enumerate(x_spans):
-            is_space_before = False
-            if idx > 0:
-                prev_x_e = x_spans[idx - 1][1]
-                gap = x_s - prev_x_e
-                if gap >= space_threshold:
-                    is_space_before = True
-
-            glyph_slice = line_mask[:, x_s:x_e]
-            fg_rows = np.where(np.sum(glyph_slice > 0, axis=1) > 0)[0]
-            if fg_rows.size == 0:
-                continue
-
-            y_s = int(fg_rows[0])
-            y_e = int(fg_rows[-1]) + 1
-
-            char_h = y_e - y_s
-            char_w = x_e - x_s
-
-            # Layout criteria for valid glyphs, thin symbols, and punctuation
-            is_thin_horizontal = (char_h < min_char_height) and (char_w / max(char_h, 1) >= min_aspect_ratio_for_thin)
-            is_small_dot = (char_h >= 2) and (char_w >= 2) and (char_h <= 6) and (
-                        char_w <= 6)  # Periods, commas, apostrophes
-
-            if not (is_thin_horizontal or is_small_dot) and (char_h < min_char_height or char_w < min_char_width):
-                continue
-
-            tight_char_crop = glyph_slice[y_s:y_e, :]
+        for idx, g in enumerate(merged_glyphs):
+            if idx == 0:
+                is_space_before = False
+            else:
+                prev_g = merged_glyphs[idx - 1]
+                gap = g["bbox"][0] - (prev_g["bbox"][0] + prev_g["bbox"][2])
+                is_space_before = gap >= space_threshold
 
             characters.append({
-                "bbox": (int(x_s), int(y_s), int(x_e - x_s), int(y_e - y_s)),
-                "crop": tight_char_crop,
+                "bbox": g["bbox"],
+                "crop": g["crop"],
                 "is_space_before": is_space_before,
             })
 
@@ -509,6 +654,7 @@ class ImagePreprocessor:
         char_crop: np.ndarray,
         target_size: tuple[int, int] = (32, 32),
         padding: int = 2,
+        is_foreground: bool = True,
     ) -> np.ndarray:
         """Tightly crops foreground pixels and normalizes them onto a target canvas preserving aspect ratio.
 
@@ -519,11 +665,12 @@ class ImagePreprocessor:
             char_crop: 2D binary numpy array of character glyph.
             target_size: (width, height) of normalized output canvas.
             padding: Safe margin around the glyph inside target canvas.
+            is_foreground: Whether char_crop is already a foreground mask (255=text, 0=bg). Defaults to True.
 
         Returns:
             Normalized 2D uint8 numpy array with shape (target_size[1], target_size[0]).
         """
-        if np.count_nonzero(char_crop == 0) == 0 and np.any(char_crop > 0):
+        if is_foreground:
             crop_mask = np.asarray(char_crop, dtype=np.uint8)
         else:
             crop_mask = ImagePreprocessor.invert_to_foreground_mask(char_crop)
@@ -542,37 +689,16 @@ class ImagePreprocessor:
         max_w = max(1, target_w - 2 * padding)
         max_h = max(1, target_h - 2 * padding)
 
+        scale = min(max_w / max(crop_w, 1), max_h / max(crop_h, 1))
+        new_w = max(1, int(round(crop_w * scale)))
+        new_h = max(1, int(round(crop_h * scale)))
+
+        resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
+
         canvas = np.zeros((target_h, target_w), dtype=np.uint8)
-
-        if crop_h < 6 and (crop_w / max(crop_h, 1)) > 1.5:
-            scale = min(max_w / crop_w, 1.0)
-            new_w = max(1, int(round(crop_w * scale)))
-            new_h = max(1, int(round(crop_h * scale)))
-
-            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
-
-            start_x = (target_w - new_w) // 2
-            start_y = target_h // 2 - new_h // 2
-            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
-        elif crop_h < 8 and crop_w < 8:
-            resized_binary = np.where(tight > 100, 255, 0).astype(np.uint8)
-            new_w, new_h = tight.shape[1], tight.shape[0]
-
-            start_x = (target_w - new_w) // 2
-            start_y = target_h - padding - new_h - 2
-
-            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
-        else:
-            scale = min(max_w / crop_w, max_h / crop_h)
-            new_w = max(1, int(round(crop_w * scale)))
-            new_h = max(1, int(round(crop_h * scale)))
-
-            resized = cv2.resize(tight, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            resized_binary = np.where(resized > 100, 255, 0).astype(np.uint8)
-
-            start_x = (target_w - new_w) // 2
-            start_y = (target_h - new_h) // 2
-            canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
+        start_x = (target_w - new_w) // 2
+        start_y = (target_h - new_h) // 2
+        canvas[start_y: start_y + new_h, start_x: start_x + new_w] = resized_binary
 
         return canvas

@@ -193,10 +193,6 @@ class TemplateMatchingOCR(BaseOCREngine):
                 [t.astype(np.float64) for _, t in self.templates]
             )
 
-        print(f"[OCR] Engine initialized: {self.name}")
-        print(f"[OCR] Templates directory: {self.templates_dir}")
-        print(f"[OCR] Loaded templates: {len(self.templates)}")
-
     # ---------------------------------------------------------
     # PUBLIC API
     # ---------------------------------------------------------
@@ -225,10 +221,6 @@ class TemplateMatchingOCR(BaseOCREngine):
         if image_name is None and isinstance(image, (str, Path)):
             image_name = Path(image).name
 
-        print("\n" + "=" * 50)
-        print("TEMPLATE MATCHING OCR")
-        print("==================================================")
-        print(f"Załadowano szablonów: {len(self.templates)}")
         if image_name:
             print(f"Obraz: {image_name}")
         print("[OCR] Rozpoczęto proces rozpoznawania tekstu...")
@@ -259,10 +251,6 @@ class TemplateMatchingOCR(BaseOCREngine):
 
             result = "\n".join(recognized_lines)
 
-            print("==================================================")
-            print(f"ROZPOZNANY TEKST: {result}")
-            print("==================================================\n")
-
             return result
 
         except (ValueError, TypeError, OSError) as error:
@@ -287,8 +275,6 @@ class TemplateMatchingOCR(BaseOCREngine):
                     chars = [str(c) for c in data["chars"]]
                     tpls = data["templates"]
                     self.templates = [(chars[i], tpls[i]) for i in range(len(chars))]
-                    print(f"Załadowano szablonów: {len(self.templates)}")
-                    print(f"[OCR] Successfully loaded {len(self.templates)} templates from cache.")
                     return
             except Exception:
                 self.templates = []

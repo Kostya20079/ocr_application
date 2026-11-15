@@ -12,28 +12,123 @@ import json
 import os
 import platform
 import string
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.core.preprocessor import ImagePreprocessor
+
 
 # Candidate font paths per operating system
 LINUX_CANDIDATE_FONTS = [
+    # DejaVu (Sans, Serif, Mono)
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    # Liberation (Sans, Serif, Mono)
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
+    # Ubuntu (Sans, Mono)
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-B.ttf",
+    # FreeFont (Sans, Serif, Mono)
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSerif.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
+    # Noto
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+    # URW / PostScript standard base fonts (Times, Helvetica, Courier, Palatino, Century equivalents)
+    "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusRoman-Bold.otf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusSans-Bold.otf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Bold.otf",
+    "/usr/share/fonts/opentype/urw-base35/C059-Roman.otf",
+    "/usr/share/fonts/opentype/urw-base35/C059-Bold.otf",
+    "/usr/share/fonts/opentype/urw-base35/P052-Roman.otf",
+    "/usr/share/fonts/opentype/urw-base35/P052-Bold.otf",
+    "/usr/share/fonts/opentype/urw-base35/URWBookman-Demi.otf",
+    "/usr/share/fonts/opentype/urw-base35/URWBookman-Light.otf",
+    "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
 ]
 
 WINDOWS_CANDIDATE_FONTS = [
+    # Standard Core Fonts
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "arial.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "arialbd.ttf"),
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "times.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "timesbd.ttf"),
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "calibri.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "calibrib.ttf"),
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "segoeui.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "segoeuib.ttf"),
     os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "cour.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "courbd.ttf"),
+    # Additional Standard Book & Document Fonts
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "georgia.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "georgiab.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "garamond.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "tahoma.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "tahomabd.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "verdana.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "verdanab.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "consola.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "consolab.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "trebuc.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "trebucbd.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "palabi.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "pala.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "palab.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "cambria.ttc"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "comic.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "comicbd.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "corbel.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "corbelb.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "candara.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "candarab.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "constant.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "constantb.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "century.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "bookos.ttf"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "bookosb.ttf"),
 ]
+
+def find_candidate_fonts() -> list[str]:
+    """Finds all available candidate fonts across the current operating system."""
+    current_os = platform.system().lower()
+    candidates = LINUX_CANDIDATE_FONTS if "linux" in current_os else WINDOWS_CANDIDATE_FONTS
+
+    found = [p for p in candidates if os.path.exists(p)]
+    if not found:
+        default_f = find_default_font()
+        return [default_f] if default_f else []
+    return found
 
 def find_default_font() -> str:
     """Finds first existing default font across Windows, Linux, and macOS."""
@@ -66,7 +161,7 @@ DIGITS = string.digits
 # Common punctuation and book typography symbols
 PUNCTUATION = ".,!?:;-\"\'()[]{}/\\@#$%&*+=<>_~`^|"
 # Additional typography symbols often found in books and texts
-EXTENDED_SYMBOLS = "«»„“”‘’—–…§©®°±×÷"
+EXTENDED_SYMBOLS = "„“”‘’—–…"
 
 
 def char_to_filename(char: str, font_name: str, index: int = 0) -> str:
@@ -127,6 +222,9 @@ def crop_and_normalize(
 ) -> np.ndarray:
     """Tightly crops foreground pixels and normalizes them onto a target canvas preserving aspect ratio.
 
+    Uses ImagePreprocessor.normalize_character to guarantee 100% consistency between template
+    generation and OCR inference.
+
     Args:
         binary_glyph: 2D uint8 numpy array (255=foreground, 0=background).
         target_size: (width, height) of normalized output canvas.
@@ -135,40 +233,12 @@ def crop_and_normalize(
     Returns:
         Normalized 2D uint8 numpy array with target_size.
     """
-    target_w, target_h = target_size
-    fg_indices = np.argwhere(binary_glyph > 0)
-
-    # If completely empty glyph (e.g. whitespace)
-    if fg_indices.size == 0:
-        return np.zeros((target_h, target_w), dtype=np.uint8)
-
-    y_min, x_min = fg_indices.min(axis=0)
-    y_max, x_max = fg_indices.max(axis=0) + 1  # slice upper bound is exclusive
-
-    cropped = binary_glyph[y_min:y_max, x_min:x_max]
-    crop_h, crop_w = cropped.shape
-
-    # Calculate scale factor preserving aspect ratio
-    max_w = max(1, target_w - 2 * padding)
-    max_h = max(1, target_h - 2 * padding)
-
-    scale = min(max_w / crop_w, max_h / crop_h)
-    new_w = max(1, int(round(crop_w * scale)))
-    new_h = max(1, int(round(crop_h * scale)))
-
-    # Resize using Pillow (NEAREST or BILINEAR + threshold)
-    crop_pil = Image.fromarray(cropped)
-    resized_pil = crop_pil.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
-    resized_arr = np.array(resized_pil, dtype=np.uint8)
-    resized_binary = np.where(resized_arr > 100, 255, 0).astype(np.uint8)
-
-    # Center inside target canvas
-    canvas = np.zeros((target_h, target_w), dtype=np.uint8)
-    start_x = (target_w - new_w) // 2
-    start_y = (target_h - new_h) // 2
-    canvas[start_y : start_y + new_h, start_x : start_x + new_w] = resized_binary
-
-    return canvas
+    return ImagePreprocessor.normalize_character(
+        binary_glyph,
+        target_size=target_size,
+        padding=padding,
+        is_foreground=True,
+    )
 
 
 def generate_dataset(
@@ -202,8 +272,7 @@ def generate_dataset(
         )
 
     if not font_paths:
-        default_f = find_default_font()
-        font_paths = [default_f] if default_f else []
+        font_paths = find_candidate_fonts()
 
     metadata_list: list[dict[str, Any]] = []
 
@@ -237,6 +306,18 @@ def generate_dataset(
 
     # Save index.json
     index_file = output_path / "index.json"
+    if index_file.exists():
+        try:
+            with open(index_file, "r", encoding="utf-8") as f:
+                existing_meta = json.load(f)
+            generated_filenames = {m["filename"] for m in metadata_list}
+            for entry in existing_meta:
+                fn = entry.get("filename")
+                if fn and fn not in generated_filenames and (output_path / fn).exists():
+                    metadata_list.append(entry)
+        except Exception:
+            pass
+
     with open(index_file, "w", encoding="utf-8") as f:
         json.dump(metadata_list, f, indent=2, ensure_ascii=False)
 
