@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -91,12 +92,14 @@ class OCRAppGUI:
         self.text_result = tk.Text(self.text_frame, wrap=tk.WORD)
         self.text_result.pack(fill=tk.BOTH, expand=True)
 
-        # Bottom action bar (copy to clipboard & status)
+        # Bottom action bar (copy to clipboard, progress bar & status)
         bottom_frame = ttk.Frame(self.root, padding=10)
         bottom_frame.pack(fill=tk.X)
 
         self.btn_copy = ttk.Button(bottom_frame, text=language("copy_button"), command=self._copy_to_clipboard)
         self.btn_copy.pack(side=tk.RIGHT)
+
+        self.progress_bar = ttk.Progressbar(bottom_frame, mode="indeterminate", length=140)
 
         self.lbl_status = ttk.Label(bottom_frame, text=language("status_ready"))
         self.lbl_status.pack(side=tk.LEFT)
@@ -189,28 +192,50 @@ class OCRAppGUI:
 
         engine_display_name = language(f"engines.{engine_key}")
         self.lbl_status.config(text=language("status_processing", method=engine_display_name))
+        self.btn_run.config(state=tk.DISABLED)
+        self.progress_bar.pack(side=tk.RIGHT, padx=10)
+        self.progress_bar.start(10)
         self.root.update_idletasks()
 
-        try:
-            image_name = self.selected_image_path.name if self.selected_image_path else None
-            if Image is not None:
-                import numpy as np
-                img_np = np.array(Image.open(self.selected_image_path))
-                try:
-                    result = engine.recognize(img_np, image_name=image_name)
-                except TypeError:
-                    result = engine.recognize(img_np)
-            else:
-                try:
-                    result = engine.recognize(self.selected_image_path, image_name=image_name)
-                except TypeError:
-                    result = engine.recognize(self.selected_image_path)
-            self.text_result.delete("1.0", tk.END)
-            self.text_result.insert(tk.END, result)
-            self.lbl_status.config(text=language("status_done"))
-        except Exception as e:
-            messagebox.showerror("Error", language("error_ocr_failed", error=str(e)))
-            self.lbl_status.config(text=language("status_error"))
+        image_path = self.selected_image_path
+
+        def _worker() -> None:
+            try:
+                image_name = image_path.name
+                if Image is not None:
+                    import numpy as np
+                    img_np = np.array(Image.open(image_path))
+                    try:
+                        result = engine.recognize(img_np, image_name=image_name)
+                    except TypeError:
+                        result = engine.recognize(img_np)
+                else:
+                    try:
+                        result = engine.recognize(image_path, image_name=image_name)
+                    except TypeError:
+                        result = engine.recognize(image_path)
+
+                def _on_success() -> None:
+                    self.text_result.delete("1.0", tk.END)
+                    self.text_result.insert(tk.END, result)
+                    self.lbl_status.config(text=language("status_done"))
+                    self.progress_bar.stop()
+                    self.progress_bar.pack_forget()
+                    self.btn_run.config(state=tk.NORMAL)
+
+                self.root.after(0, _on_success)
+
+            except Exception as e:
+                def _on_error(err_str: str = str(e)) -> None:
+                    self.progress_bar.stop()
+                    self.progress_bar.pack_forget()
+                    self.btn_run.config(state=tk.NORMAL)
+                    self.lbl_status.config(text=language("status_error"))
+                    messagebox.showerror("Error", language("error_ocr_failed", error=err_str))
+
+                self.root.after(0, _on_error)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _copy_to_clipboard(self) -> None:
         text = self.text_result.get("1.0", tk.END).strip()

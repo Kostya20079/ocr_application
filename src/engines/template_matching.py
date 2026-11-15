@@ -15,6 +15,127 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+try:
+    import numba
+
+    @numba.njit(fastmath=True)
+    def _calculate_similarity_numba(first: np.ndarray, second: np.ndarray) -> float:
+        h, w = first.shape
+        total_pixels = h * w
+
+        sum_f = 0.0
+        sum_s = 0.0
+        for r in range(h):
+            for c in range(w):
+                sum_f += first[r, c]
+                sum_s += second[r, c]
+        mean_f = sum_f / total_pixels
+        mean_s = sum_s / total_pixels
+
+        cross_sum = 0.0
+        var_f = 0.0
+        var_s = 0.0
+        intersection = 0
+        total = 0
+
+        for r in range(h):
+            for c in range(w):
+                f_val = first[r, c]
+                s_val = second[r, c]
+                df = f_val - mean_f
+                ds = s_val - mean_s
+                cross_sum += df * ds
+                var_f += df * df
+                var_s += ds * ds
+
+                f_mask = 1 if f_val > 0.0 else 0
+                s_mask = 1 if s_val > 0.0 else 0
+                if f_mask != 0 and s_mask != 0:
+                    intersection += 1
+                total += f_mask + s_mask
+
+        denom = np.sqrt(var_f * var_s)
+        if denom > 0.0:
+            corr = cross_sum / denom
+        else:
+            corr = 0.0
+
+        if np.isnan(corr) or np.isinf(corr):
+            corr = 0.0
+        corr = (corr + 1.0) / 2.0
+
+        dice = (2.0 * intersection / total) if total > 0 else 0.0
+        return 0.65 * corr + 0.35 * dice
+
+    @numba.njit(fastmath=True, parallel=True)
+    def _batch_calculate_similarity_numba(
+        character: np.ndarray,
+        templates: np.ndarray,
+    ) -> np.ndarray:
+        N, H, W = templates.shape
+        scores = np.empty(N, dtype=np.float64)
+        total_pixels = H * W
+
+        sum_c = 0.0
+        for r in range(H):
+            for c in range(W):
+                sum_c += character[r, c]
+        mean_c = sum_c / total_pixels
+
+        var_c = 0.0
+        total_c_nonzero = 0
+        for r in range(H):
+            for c in range(W):
+                dc = character[r, c] - mean_c
+                var_c += dc * dc
+                if character[r, c] > 0.0:
+                    total_c_nonzero += 1
+
+        for i in numba.prange(N):
+            tpl = templates[i]
+            sum_t = 0.0
+            for r in range(H):
+                for c in range(W):
+                    sum_t += tpl[r, c]
+            mean_t = sum_t / total_pixels
+
+            cross_sum = 0.0
+            var_t = 0.0
+            intersection = 0
+            total_t_nonzero = 0
+            for r in range(H):
+                for c in range(W):
+                    c_val = character[r, c]
+                    t_val = tpl[r, c]
+                    dc = c_val - mean_c
+                    dt = t_val - mean_t
+                    cross_sum += dc * dt
+                    var_t += dt * dt
+                    if (c_val > 0.0) and (t_val > 0.0):
+                        intersection += 1
+                    if t_val > 0.0:
+                        total_t_nonzero += 1
+
+            denom = np.sqrt(var_c * var_t)
+            if denom > 0.0:
+                corr = cross_sum / denom
+            else:
+                corr = 0.0
+
+            if np.isnan(corr) or np.isinf(corr):
+                corr = 0.0
+            corr = (corr + 1.0) / 2.0
+
+            tot = total_c_nonzero + total_t_nonzero
+            dice = (2.0 * intersection / tot) if tot > 0 else 0.0
+            scores[i] = 0.65 * corr + 0.35 * dice
+
+        return scores
+
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    _NUMBA_AVAILABLE = False
+
 from src.core.base import BaseOCREngine
 from src.core.preprocessor import ImagePreprocessor
 
@@ -61,8 +182,16 @@ class TemplateMatchingOCR(BaseOCREngine):
                 self.templates_dir = project_root / "data" / "templates"
 
         self.templates: list[tuple[str, np.ndarray]] = []
+        self._template_matrix: np.ndarray | None = None
+        self._template_chars: list[str] = []
 
         self._load_templates()
+
+        if self.templates:
+            self._template_chars = [c for c, _ in self.templates]
+            self._template_matrix = np.stack(
+                [t.astype(np.float64) for _, t in self.templates]
+            )
 
         print(f"[OCR] Engine initialized: {self.name}")
         print(f"[OCR] Templates directory: {self.templates_dir}")
@@ -99,9 +228,10 @@ class TemplateMatchingOCR(BaseOCREngine):
         print("\n" + "=" * 50)
         print("TEMPLATE MATCHING OCR")
         print("==================================================")
-        print(f"\nZaładowano szablonów: {len(self.templates)}\n")
+        print(f"Załadowano szablonów: {len(self.templates)}")
         if image_name:
-            print(f"Obraz: {image_name}\n")
+            print(f"Obraz: {image_name}")
+        print("[OCR] Rozpoczęto proces rozpoznawania tekstu...")
 
         try:
             binary_image = self._preprocess_image(image)
@@ -144,8 +274,24 @@ class TemplateMatchingOCR(BaseOCREngine):
     # ---------------------------------------------------------
 
     def _load_templates(self) -> None:
-        """Load and validate character templates using index.json metadata."""
+        """Load and validate character templates using index.json metadata (or cache if available)."""
+        cache_path = self.templates_dir / "templates_cache.npz"
         index_path = self.templates_dir / "index.json"
+
+        if cache_path.is_file():
+            try:
+                cache_mtime = cache_path.stat().st_mtime
+                index_mtime = index_path.stat().st_mtime if index_path.is_file() else 0
+                if cache_mtime >= index_mtime:
+                    data = np.load(cache_path)
+                    chars = [str(c) for c in data["chars"]]
+                    tpls = data["templates"]
+                    self.templates = [(chars[i], tpls[i]) for i in range(len(chars))]
+                    print(f"Załadowano szablonów: {len(self.templates)}")
+                    print(f"[OCR] Successfully loaded {len(self.templates)} templates from cache.")
+                    return
+            except Exception:
+                self.templates = []
 
         if not index_path.is_file():
             print(f"[OCR] ERROR: Missing file: {index_path}")
@@ -354,9 +500,12 @@ class TemplateMatchingOCR(BaseOCREngine):
         character: np.ndarray,
         template: np.ndarray,
     ) -> float:
-        """Calculate combined normalized cross-correlation and Dice similarity using pure NumPy."""
+        """Calculate combined normalized cross-correlation and Dice similarity."""
         first = character.astype(np.float64)
         second = template.astype(np.float64)
+
+        if _NUMBA_AVAILABLE:
+            return float(_calculate_similarity_numba(first, second))
 
         # Normalized cross-correlation (Pearson correlation coefficient)
         first_centered = first - np.mean(first)
@@ -400,45 +549,36 @@ class TemplateMatchingOCR(BaseOCREngine):
         char_index: int | None = None,
         original_dim: tuple[int, int] | None = None,
     ) -> str:
-        """Find the best matching character template and log detailed comparisons to console."""
+        """Find the best matching character template."""
         if not self.templates:
             return "?"
-
-        if char_index is not None:
-            print(f"ZNAK {char_index}:")
-            if original_dim is not None:
-                w, h = original_dim
-                print(f"  Wymiary fragmentu: {w}x{h} px")
-        elif original_dim is not None:
-            w, h = original_dim
-            print("ZNAK:")
-            print(f"  Wymiary fragmentu: {w}x{h} px")
 
         best_character = "?"
         best_score = -1.0
 
-        for template_character, template in self.templates:
-            score = self._calculate_similarity(character, template)
-            pct = score * 100.0
-
-            safe_char = self._format_char_for_console(template_character)
-            print(f"  Porównanie z {safe_char}: {pct:.2f}%")
-
-            if score > best_score:
-                best_score = score
-                best_character = template_character
+        if (
+            _NUMBA_AVAILABLE
+            and self._template_matrix is not None
+            and len(self._template_matrix) == len(self.templates)
+        ):
+            scores = _batch_calculate_similarity_numba(
+                character.astype(np.float64),
+                self._template_matrix,
+            )
+            best_idx = int(np.argmax(scores))
+            best_score = float(scores[best_idx])
+            best_character = self.templates[best_idx][0]
+        else:
+            for template_character, template in self.templates:
+                score = self._calculate_similarity(character, template)
+                if score > best_score:
+                    best_score = score
+                    best_character = template_character
 
         if best_score < self.MATCH_THRESHOLD:
-            status = f"odrzucono (poniżej progu {self.MATCH_THRESHOLD * 100:.1f}%)"
             accepted_char = "?"
         else:
-            status = "zaakceptowano"
             accepted_char = best_character
-
-        safe_best = self._format_char_for_console(best_character)
-        print(f"\n  Najlepsze dopasowanie: {safe_best}")
-        print(f"  Podobieństwo: {best_score * 100.0:.2f}%")
-        print(f"  Status: {status}\n")
 
         return accepted_char
 
