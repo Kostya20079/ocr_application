@@ -11,6 +11,7 @@ models/*
 !models/.gitkeep
 data/raw/*
 data/processed/*
+data/templates/*
 !data/**/.gitkeep
 *.egg-info/
 .idea/
