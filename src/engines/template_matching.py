@@ -342,6 +342,14 @@ class TemplateMatchingOCR(BaseOCREngine):
         print(f"Załadowano szablonów: {len(self.templates)}")
         print(f"[OCR] Successfully loaded {len(self.templates)} templates.")
 
+        if self.templates and index_path.is_file():
+            try:
+                chars_arr = np.array([c for c, _ in self.templates])
+                tpls_arr = np.stack([t for _, t in self.templates])
+                np.savez_compressed(cache_path, chars=chars_arr, templates=tpls_arr)
+            except Exception:
+                pass
+
     # ---------------------------------------------------------
     # IMAGE PREPROCESSING (DELEGATED TO ImagePreprocessor)
     # ---------------------------------------------------------
@@ -435,8 +443,28 @@ class TemplateMatchingOCR(BaseOCREngine):
         self,
         line: np.ndarray,
     ) -> list[tuple[np.ndarray, int, int]]:
-        """Detect individual character glyphs using ImagePreprocessor projection profile segments."""
+        """Detect individual character glyphs using connected components and projection fallback."""
         line_mask = ImagePreprocessor.invert_to_foreground_mask(line)
+        if not np.any(line_mask > 0):
+            return []
+
+        # First attempt robust connected-components segmentation with touching-glyph splitting
+        try:
+            char_dicts = ImagePreprocessor.segment_characters_and_spaces(
+                line_mask,
+                space_ratio_threshold=0.38,
+                min_char_width=self.MIN_CHARACTER_WIDTH,
+                min_char_height=self.MIN_CHARACTER_HEIGHT,
+            )
+            if char_dicts:
+                return [
+                    (c["crop"], int(c["bbox"][0]), int(c["bbox"][0] + c["bbox"][2]))
+                    for c in char_dicts
+                ]
+        except Exception:
+            pass
+
+        # Fallback to projection profile segmentation
         v_profile = np.sum(line_mask > 0, axis=0)
 
         segments = ImagePreprocessor.find_projection_profile_segments(
@@ -534,13 +562,11 @@ class TemplateMatchingOCR(BaseOCREngine):
         character: np.ndarray,
         char_index: int | None = None,
         original_dim: tuple[int, int] | None = None,
+        line_context: dict[str, Any] | None = None,
     ) -> str:
-        """Find the best matching character template."""
+        """Find the best matching character template using feature-weighted similarity."""
         if not self.templates:
             return "?"
-
-        best_character = "?"
-        best_score = -1.0
 
         if (
             _NUMBA_AVAILABLE
@@ -551,20 +577,58 @@ class TemplateMatchingOCR(BaseOCREngine):
                 character.astype(np.float64),
                 self._template_matrix,
             )
-            best_idx = int(np.argmax(scores))
-            best_score = float(scores[best_idx])
-            best_character = self.templates[best_idx][0]
+            char_scores: dict[str, float] = {}
+            for i, t_char in enumerate(self._template_chars):
+                s = float(scores[i])
+                if s > char_scores.get(t_char, -1.0):
+                    char_scores[t_char] = s
         else:
-            for template_character, template in self.templates:
-                score = self._calculate_similarity(character, template)
-                if score > best_score:
-                    best_score = score
-                    best_character = template_character
+            char_scores = {}
+            for t_char, template in self.templates:
+                s = self._calculate_similarity(character, template)
+                if s > char_scores.get(t_char, -1.0):
+                    char_scores[t_char] = s
 
+        if not char_scores:
+            return "?"
+
+        # Dampen rare symbols so they do not overshadow natural letters
+        for sym in "{}[]«»°~^|":
+            if sym in char_scores:
+                char_scores[sym] -= 0.04
+
+        best_score = max(char_scores.values())
         if best_score < self.MATCH_THRESHOLD:
-            accepted_char = "?"
-        else:
-            accepted_char = best_character
+            return "?"
+
+        accepted_char = max(char_scores, key=char_scores.get)
+
+        # Apply typographic height and baseline disambiguation if context is available
+        if line_context and original_dim:
+            cw, ch = original_dim
+            line_h = int(line_context.get("line_h", 20))
+            med_h = float(line_context.get("med_h", 14.0))
+            by = int(line_context.get("by", 0))
+            has_descenders = bool(line_context.get("has_descenders", False))
+
+            is_cap_height = (ch >= med_h * 1.12) or (by <= int(line_h * 0.15) and ch >= int(line_h * 0.85))
+            is_x_height = (ch <= int(med_h * 1.02)) and (by >= int(line_h * 0.18))
+
+            if is_cap_height:
+                if accepted_char in ("o", "s", "c", "v", "w", "z", "x"):
+                    accepted_char = accepted_char.upper()
+                elif accepted_char == "r":
+                    accepted_char = "E"
+                elif accepted_char == "p" and not has_descenders:
+                    accepted_char = "P"
+            elif is_x_height:
+                if accepted_char in ("O", "S", "C", "V", "W", "Z", "X"):
+                    accepted_char = accepted_char.lower()
+                elif accepted_char == "P":
+                    accepted_char = "p"
+
+            if accepted_char in ("'", "’", "`") and ch >= int(med_h * 0.75):
+                accepted_char = "1"
 
         return accepted_char
 
@@ -578,43 +642,87 @@ class TemplateMatchingOCR(BaseOCREngine):
         char_counter: list[int] | None = None,
     ) -> str:
         """Recognize characters and space intervals in one text line."""
-        characters = self._segment_characters(line)
-
-        if not characters:
+        line_mask = ImagePreprocessor.invert_to_foreground_mask(line)
+        if not np.any(line_mask > 0):
             return ""
 
-        widths = [end - start for _, start, end in characters]
-        median_width = float(np.median(widths))
+        line_h = line_mask.shape[0]
 
-        space_threshold = max(
-            self.MIN_SPACE_WIDTH,
-            median_width * self.SPACE_WIDTH_FACTOR,
-        )
+        # Use robust character segmentation
+        char_dicts = []
+        try:
+            char_dicts = ImagePreprocessor.segment_characters_and_spaces(
+                line_mask,
+                space_ratio_threshold=0.38,
+                min_char_width=self.MIN_CHARACTER_WIDTH,
+                min_char_height=self.MIN_CHARACTER_HEIGHT,
+            )
+        except Exception:
+            pass
 
-        result = []
-        previous_end = None
+        if not char_dicts:
+            legacy_chars = self._segment_characters(line)
+            if not legacy_chars:
+                return ""
+            char_dicts = [
+                {
+                    "crop": c,
+                    "bbox": (start, 0, end - start, line_h),
+                    "is_space_before": False,
+                }
+                for c, start, end in legacy_chars
+            ]
+
+        # Calculate line height statistics
+        char_hs = [c["bbox"][3] for c in char_dicts if c["bbox"][3] >= 5]
+        med_h = float(np.median(char_hs)) if char_hs else float(line_h * 0.7)
+        char_ws = [c["bbox"][2] for c in char_dicts if c["bbox"][2] >= 3]
+        med_w = float(np.median(char_ws)) if char_ws else 12.0
+
+        # Detect presence of descenders across line
+        has_descenders = any((c["bbox"][1] + c["bbox"][3]) > int(med_h * 1.3) for c in char_dicts)
+
+        # Dynamic space threshold based on inter-character gaps
+        gaps = [
+            char_dicts[k + 1]["bbox"][0] - (char_dicts[k]["bbox"][0] + char_dicts[k]["bbox"][2])
+            for k in range(len(char_dicts) - 1)
+        ]
+        pos_gaps = [g for g in gaps if g > 0]
+        med_gap = float(np.median(pos_gaps)) if pos_gaps else 2.0
+        space_threshold = max(4.0, min(med_w * 0.45, med_gap * 2.2))
+
+        result: list[str] = []
+        prev_end: int | None = None
 
         if char_counter is None:
             char_counter = [0]
 
-        for character, start, end in characters:
-            # Detect word spacing
-            if previous_end is not None:
-                gap = start - previous_end
-                if gap >= space_threshold:
+        for char_info in char_dicts:
+            crop = char_info["crop"]
+            bx, by, bw, bh = char_info["bbox"]
+
+            if prev_end is not None:
+                gap = bx - prev_end
+                if gap >= space_threshold or char_info.get("is_space_before", False):
                     result.append(" ")
 
             char_counter[0] += 1
-            char_h, char_w = character.shape[:2]
+            normalized = self._normalize_character(crop)
+            line_ctx = {
+                "line_h": line_h,
+                "med_h": med_h,
+                "by": by,
+                "has_descenders": has_descenders,
+            }
 
-            normalized = self._normalize_character(character)
             recognized = self._match_template(
                 normalized,
                 char_index=char_counter[0],
-                original_dim=(char_w, char_h),
+                original_dim=(bw, bh),
+                line_context=line_ctx,
             )
 
             result.append(recognized)
-            previous_end = end
+            prev_end = bx + bw
 
         return "".join(result).strip()
