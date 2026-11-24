@@ -218,10 +218,10 @@ def visualize_normalized_word_letters(image, line_idx: int = 1, target_size: tup
 
 
 if __name__ == "__main__":
-    img_name = "text_sample.png"
+    img_name = "text-sample2.png"
     sample_path = get_resource_path(f"data/samples/{img_name}")
     if not sample_path.exists():
-        sample_path = get_resource_path("data/samples/text_sample1.png")
+        sample_path = get_resource_path("data/samples/text-sample1.png")
 
     image = cv2.imread(str(sample_path))
     if image is None:

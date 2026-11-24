@@ -223,7 +223,6 @@ class TemplateMatchingOCR(BaseOCREngine):
 
         if image_name:
             print(f"Obraz: {image_name}")
-        print("[OCR] Rozpoczęto proces rozpoznawania tekstu...")
 
         try:
             binary_image = self._preprocess_image(image)
@@ -339,7 +338,6 @@ class TemplateMatchingOCR(BaseOCREngine):
             except (OSError, ValueError):
                 continue
 
-        print(f"Załadowano szablonów: {len(self.templates)}")
         print(f"[OCR] Successfully loaded {len(self.templates)} templates.")
 
         if self.templates and index_path.is_file():
@@ -631,6 +629,25 @@ class TemplateMatchingOCR(BaseOCREngine):
                 accepted_char = "1"
 
         return accepted_char
+
+    def predict_glyph(self, glyph_crop: np.ndarray) -> str:
+        """Predicts the character for a single glyph crop using template matching.
+
+        Args:
+            glyph_crop: 2D binary numpy array representing character glyph.
+
+        Returns:
+            Predicted character string.
+        """
+        if not self.templates:
+            raise RuntimeError("Template matching templates not loaded.")
+
+        if glyph_crop.shape != (self.TEMPLATE_SIZE, self.TEMPLATE_SIZE):
+            glyph = self._normalize_character(glyph_crop)
+        else:
+            glyph = glyph_crop.astype(np.uint8)
+
+        return self._match_template(glyph)
 
     # ---------------------------------------------------------
     # TEXT RECOGNITION
