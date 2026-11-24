@@ -85,6 +85,20 @@ python app.py
 python -m unittest discover tests
 ```
 
+### Character Recognition Accuracy Test & Benchmark
+To evaluate per-character accuracy percentages, confusion matrices, and comparison tables for all OCR algorithms:
+```bash
+# Run unit tests with console accuracy report:
+python -m unittest tests/test_character_accuracy.py
+
+# Or run the benchmark tool directly with formatted console output:
+python tests/test_character_accuracy.py
+
+# Optional: customize samples per character or evaluate all dataset templates:
+python tests/test_character_accuracy.py --samples-per-char 5
+python tests/test_character_accuracy.py --all-samples
+```
+
 ### Visualizing Preprocessing & Segmentation Pipeline
 To visually inspect binarization, paragraph grouping, line isolation, character segmentation, and glyph normalization:
 ```bash
