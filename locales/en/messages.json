@@ -1,20 +1,31 @@
 {
   "app_title": "Optical Character Recognition (OCR) Application",
+  "app_subtitle": "Desktop OCR Studio • Character Recognition & Extraction",
   "config_frame_title": "Configuration & Image Source",
-  "ocr_method_label": "OCR Method:",
-  "samples_label": "Sample Materials:",
-  "browse_button": "Choose Custom File...",
+  "step1_title": "1. Image Source",
+  "step2_title": "2. OCR Engine",
+  "ocr_method_label": "Method:",
+  "samples_label": "Sample Images:",
+  "browse_button": "Browse File...",
   "run_button": "Recognize Text",
+  "clear_button": "Clear",
+  "save_button": "Save to File...",
   "preview_frame_title": "Image Preview",
-  "no_image_label": "No image selected",
+  "no_image_label": "No image selected\n\nChoose a sample from the dropdown\nor click 'Browse File...' to load an image",
   "result_frame_title": "Recognized Text",
   "copy_button": "Copy to Clipboard",
+  "copied_badge": "Copied!",
+  "stats_info": "Characters: {chars}  |  Words: {words}  |  Lines: {lines}",
+  "image_meta": "{width} × {height} px  |  {size}",
+  "selected_file_label": "Selected:",
   "status_ready": "Ready.",
   "status_loaded": "Loaded file: {filename}",
   "status_processing": "Processing with: {method}...",
   "status_done": "Recognition complete.",
+  "status_done_time": "Recognition complete in {time:.2f} s.",
   "status_error": "An error occurred during recognition.",
   "status_copied": "Text copied to clipboard!",
+  "status_saved": "Text saved to: {filename}",
   "warning_no_image": "Please select an image first (from samples or your computer)!",
   "error_no_engine": "Selected OCR engine was not found!",
   "error_load_failed": "Failed to load image: {error}",
@@ -23,9 +34,15 @@
   "sample_select_placeholder": "Select a sample...",
   "sample_no_files": "No samples found",
   "language_label": "Language / Język:",
+  "file_dialog_txt": "Text files (*.txt)",
   "engines": {
     "template_matching": "Template Matching",
-    "hog_knn": "HOG + k-NN",
-    "tf_model": "Custom Model (TensorFlow + OpenCV)"
+    "hog_knn": "HOG + k-NN Classifier",
+    "tf_model": "Custom CNN (TensorFlow + OpenCV)"
+  },
+  "engine_hints": {
+    "template_matching": "Template Matching: Compares cropped characters against template glyphs.",
+    "hog_knn": "HOG + k-NN: Feature extraction with Histogram of Gradients & k-NN classification.",
+    "tf_model": "TensorFlow CNN: Deep neural network for character recognition with OpenCV layout analysis."
   }
 }

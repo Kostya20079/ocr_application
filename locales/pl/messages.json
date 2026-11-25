@@ -1,20 +1,31 @@
 {
   "app_title": "Aplikacja do Optycznego Rozpoznawania Znaków (OCR)",
+  "app_subtitle": "Desktop OCR Studio • Rozpoznawanie i ekstrakcja tekstu",
   "config_frame_title": "Konfiguracja i Źródło Obrazu",
-  "ocr_method_label": "Metoda OCR:",
-  "samples_label": "Materiały przykładowe:",
-  "browse_button": "Wybierz własny plik...",
+  "step1_title": "1. Źródło obrazu",
+  "step2_title": "2. Silnik OCR",
+  "ocr_method_label": "Metoda:",
+  "samples_label": "Przykładowe obrazy:",
+  "browse_button": "Wybierz plik...",
   "run_button": "Rozpoznaj tekst",
+  "clear_button": "Wyczyść",
+  "save_button": "Zapisz do pliku...",
   "preview_frame_title": "Podgląd obrazu",
-  "no_image_label": "Brak wybranego obrazu",
+  "no_image_label": "Brak wybranego obrazu\n\nWybierz przykład z listy powyżej\nlub kliknij 'Wybierz plik...', aby załadować obraz",
   "result_frame_title": "Rozpoznany tekst",
   "copy_button": "Kopiuj tekst do schowka",
+  "copied_badge": "Skopiowano!",
+  "stats_info": "Znaków: {chars}  |  Słów: {words}  |  Linii: {lines}",
+  "image_meta": "{width} × {height} px  |  {size}",
+  "selected_file_label": "Wybrany:",
   "status_ready": "Gotowy do działania.",
   "status_loaded": "Wczytano plik: {filename}",
   "status_processing": "Przetwarzanie metodą: {method}...",
   "status_done": "Zakończono rozpoznawanie.",
+  "status_done_time": "Rozpoznawanie zakończone w {time:.2f} s.",
   "status_error": "Wystąpił błąd podczas rozpoznawania.",
   "status_copied": "Skopiowano tekst do schowka!",
+  "status_saved": "Zapisano tekst do pliku: {filename}",
   "warning_no_image": "Wybierz najpierw obraz (z próbek lub z dysku)!",
   "error_no_engine": "Nie znaleziono wybranego silnika OCR!",
   "error_load_failed": "Nie udało się wczytać obrazu: {error}",
@@ -23,9 +34,15 @@
   "sample_select_placeholder": "Wybierz przykład...",
   "sample_no_files": "Brak próbek w folderze",
   "language_label": "Język / Language:",
+  "file_dialog_txt": "Pliki tekstowe (*.txt)",
   "engines": {
     "template_matching": "Template Matching (Dopasowanie Wzorców)",
-    "hog_knn": "HOG + k-NN",
-    "tf_model": "Własny model (TensorFlow + OpenCV)"
+    "hog_knn": "Klasyfikator HOG + k-NN",
+    "tf_model": "Własny model CNN (TensorFlow + OpenCV)"
+  },
+  "engine_hints": {
+    "template_matching": "Dopasowanie wzorców: Porównuje wycięte znaki ze wzorcami w bazie.",
+    "hog_knn": "HOG + k-NN: Ekstrakcja cech gradientowych i klasyfikacja algorytmem k-Najbliższych Sąsiadów.",
+    "tf_model": "TensorFlow CNN: Głęboka sieć splotowa z analizą układu w OpenCV."
   }
 }

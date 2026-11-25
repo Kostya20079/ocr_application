@@ -44,12 +44,14 @@ ocr_application/
 ├── tests/
 │   ├── test_skeleton.py            # Skeleton / smoke tests
 │   ├── test_image_preprocessor.py  # Unit tests for ImagePreprocessor pipeline
+│   ├── test_character_accuracy.py  # Per-character accuracy benchmark & tests
 │   └── visualize_methods.py        # Visual inspection of segmentation pipeline (paragraphs, lines, characters, normalization)
 ├── scripts/
 │   ├── build_exe.py                # Automated build script to compile to a standalone .exe
 │   ├── generate_templates.py       # Generates normalized 32×32 character templates for OCR engines
 │   └── train_hog_knn.py            # MLOps pipeline script to train and serialize the HOG + k-NN model
 ├── app.py                          # Main application entry point
+├── OCRApplication.spec             # PyInstaller build specification
 ├── requirements.txt                # Project dependencies
 ├── .gitignore
 └── README.md
@@ -83,6 +85,20 @@ python app.py
 ### Running Tests
 ```bash
 python -m unittest discover tests
+```
+
+### Character Recognition Accuracy Test & Benchmark
+To evaluate per-character accuracy percentages, confusion matrices, and comparison tables for all OCR algorithms:
+```bash
+# Run unit tests with console accuracy report:
+python -m unittest tests/test_character_accuracy.py
+
+# Or run the benchmark tool directly with formatted console output:
+python tests/test_character_accuracy.py
+
+# Optional: customize samples per character or evaluate all dataset templates:
+python tests/test_character_accuracy.py --samples-per-char 5
+python tests/test_character_accuracy.py --all-samples
 ```
 
 ### Visualizing Preprocessing & Segmentation Pipeline
@@ -127,9 +143,24 @@ The training pipeline automatically:
 
 ## Building Standalone Executable (.exe)
 
+Before building for the first time, make sure you have activated your virtual environment, installed dependencies, generated templates (`python scripts/generate_templates.py --size 32`), and trained the HOG + k-NN model (`python scripts/train_hog_knn.py`).
+
 You can compile the application into a standalone executable (or binary on Linux/macOS) using the provided build script:
 
 ```bash
 python scripts/build_exe.py
 ```
-The output executable along with bundled resources (`data/samples`, models, templates) will be generated inside the `dist/OCRApplication` directory.
+
+The output executable along with bundled resources (`data/`, `locales/`, and `_internal/`) will be generated inside the `dist/OCRApplication/` directory.
+
+To run the built application:
+- **Linux / macOS:**
+  ```bash
+  ./dist/OCRApplication/OCRApplication
+  ```
+- **Windows:**
+  ```cmd
+  dist\OCRApplication\OCRApplication.exe
+  ```
+
+> **Note:** Always run the executable from `dist/OCRApplication/`, not `build/OCRApplication/`. The `build/` directory only contains intermediate PyInstaller build files and does not include the `_internal/` shared libraries.

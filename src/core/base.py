@@ -24,3 +24,14 @@ class BaseOCREngine(ABC):
             Recognized text string.
         """
         pass
+
+    def predict_glyph(self, glyph_crop: Any) -> str:
+        """Predict character for a single glyph crop.
+
+        Args:
+            glyph_crop: 2D binary numpy array representing character glyph.
+
+        Returns:
+            Predicted character string.
+        """
+        raise NotImplementedError(f"{self.name} does not implement predict_glyph.")
